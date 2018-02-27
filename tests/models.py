@@ -378,6 +378,25 @@ class DagTest(unittest.TestCase):
         result = task.render_template('', "{{ 'world' | hello}}", dict())
         self.assertEqual(result, 'Hello world')
 
+    def test_detect_downstream_cycle(self):
+        dag = DAG(
+            'dag',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        # A -> B -> C -> A
+        with dag:
+            opA = DummyOperator(task_id='A')
+            opB = DummyOperator(task_id='B')
+            opC = DummyOperator(task_id='C')
+            opA.set_downstream(opB)
+            opB.set_downstream(opC)
+
+            with self.assertRaises(AirflowException):
+                opC.set_downstream(opA)
+
+        self.assertTrue(dag.detect_downstream_cycle())
+
 
 class DagStatTest(unittest.TestCase):
     def test_dagstats_crud(self):

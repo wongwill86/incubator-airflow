@@ -23,7 +23,7 @@ install_aliases()
 from builtins import str
 from builtins import object, bytes
 import copy
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from datetime import datetime, timedelta
 import dill
 import functools
@@ -325,6 +325,13 @@ class DagBag(BaseDagBag, LoggingMixin):
                 if isinstance(dag, DAG):
                     if not dag.full_filepath:
                         dag.full_filepath = filepath
+
+                    if dag.detect_downstream_cycle():
+                        self.log.exception("Cycle detected before bagging dag: %s", dag.full_filepath)
+                        self.import_errors[filepath] = str(e)
+                        self.file_last_changed[filepath] = file_last_changed_on_disk
+                        continue
+
                     dag.is_subdag = False
                     self.bag_dag(dag, parent_dag=dag, root_dag=dag)
                     found_dags.append(dag)
@@ -3943,6 +3950,27 @@ class DAG(BaseDag, LoggingMixin):
             else:
                 qry = qry.filter(TaskInstance.state.in_(states))
         return qry.scalar()
+
+    def detect_downstream_cycle(self):
+        visited = defaultdict(bool)
+        ancestors = defaultdict(bool)
+        for task_id in self.task_dict.keys():
+            if self._detect_downstream_helper(visited, ancestors, task_id):
+                return True
+        return False
+
+    def _detect_downstream_helper(self, visited, ancestors, task_id):
+        visited[task_id] = True
+        ancestors[task_id] = True
+
+        task = self.task_dict[task_id]
+        for descendant_id in task.get_direct_relative_ids():
+            if visited[descendant_id]:
+                continue
+            if ancestors[descendant_id] || self._detect_downstream_helper(visited, ancestors, descendant_id):
+                return True
+        ancestors[task_id] = False
+        return False
 
 
 class Chart(Base):
