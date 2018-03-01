@@ -423,6 +423,7 @@ class DagTest(unittest.TestCase):
 
         self.assertFalse(dag.test_cycle())
 
+        regexp = 'Cycle detected in DAG. '
         # test self loop
         dag = DAG(
             'dag',
@@ -434,7 +435,7 @@ class DagTest(unittest.TestCase):
             opA = DummyOperator(task_id='A')
             opA.set_downstream(opA)
 
-        with self.assertRaisesRegexp(AirflowException, "Cycle detected in DAG."):
+        with self.assertRaisesRegexp(AirflowException, regexp):
             dag.test_cycle()
 
         # test downstream self loop
@@ -456,7 +457,7 @@ class DagTest(unittest.TestCase):
             opD.set_downstream(opE)
             opE.set_downstream(opE)
 
-        with self.assertRaisesRegexp(AirflowException, "Cycle detected in DAG."):
+        with self.assertRaisesRegexp(AirflowException, regexp):
             dag.test_cycle()
 
         # large loop
@@ -478,7 +479,7 @@ class DagTest(unittest.TestCase):
             opD.set_downstream(opE)
             opE.set_downstream(opA)
 
-        with self.assertRaisesRegexp(AirflowException, "Cycle detected in DAG."):
+        with self.assertRaisesRegexp(AirflowException, regexp):
             dag.test_cycle()
 
         # test arbitrary loop
@@ -503,7 +504,7 @@ class DagTest(unittest.TestCase):
             opB.set_downstream(opF)
             opF.set_downstream(opA)
 
-        with self.assertRaisesRegexp(AirflowException, "Cycle detected in DAG."):
+        with self.assertRaisesRegexp(AirflowException, regexp):
             dag.test_cycle()
 
 
