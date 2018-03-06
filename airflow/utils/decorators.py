@@ -30,6 +30,9 @@ from airflow.exceptions import AirflowException
 
 
 def apply_defaults(func):
+
+    sig_cache = dict()
+
     """
     Function decorator that Looks for an argument named "default_args", and
     fills the unspecified arguments from it.
@@ -67,16 +70,22 @@ def apply_defaults(func):
         dag_args.update(default_args)
         default_args = dag_args
 
-        sig = signature(func)
-        non_optional_args = [
-            name for (name, param) in sig.parameters.items()
-            if param.default == param.empty and
-            param.name != 'self' and
-            param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)]
+        # Cache the call to inspect.signature(func)
+        if func in sig_cache:
+            (sig, non_optional_args) = sig_cache[func]
+        else:
+            sig = signature(func)
+            non_optional_args = {
+                name for (name, param) in sig.parameters.items()
+                if param.default == param.empty and
+                param.name != 'self' and
+                param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)}
+            sig_cache[func] = (sig, non_optional_args)
+
         for arg in sig.parameters:
-            if arg in default_args and arg not in kwargs:
+            if arg not in kwargs and arg in default_args:
                 kwargs[arg] = default_args[arg]
-        missing_args = list(set(non_optional_args) - set(kwargs))
+        missing_args = list(non_optional_args - set(kwargs))
         if missing_args:
             msg = "Argument {0} is required".format(missing_args)
             raise AirflowException(msg)
