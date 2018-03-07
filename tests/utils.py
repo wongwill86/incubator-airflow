@@ -20,10 +20,10 @@ from __future__ import unicode_literals
 import logging
 import unittest
 
-import airflow.utils.logging
+# import airflow.utils.logging
 from airflow import configuration
 from airflow.exceptions import AirflowException
-from airflow.utils.operator_resources import Resources
+from airflow.utils.operator_resources import Resources, CpuResource, RamResource, DiskResource, GpuResource
 
 
 class LogUtilsTest(unittest.TestCase):
@@ -92,3 +92,15 @@ class OperatorResourcesTest(unittest.TestCase):
     def test_negative_resource_qty(self):
         with self.assertRaises(AirflowException):
             Resources(cpus=-1)
+
+    def test_unable_to_change_resource(self):
+        resources = Resources()
+        with self.assertRaises(AttributeError):
+            resources.cpus = CpuResource(1)
+        with self.assertRaises(AttributeError):
+            resources.ram = RamResource(1)
+        with self.assertRaises(AttributeError):
+            resources.disk = DiskResource(1)
+        with self.assertRaises(AttributeError):
+            resources.gpus = GpuResource(1)
+

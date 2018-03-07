@@ -2187,7 +2187,7 @@ class BaseOperator(LoggingMixin):
             on_success_callback=None,
             on_retry_callback=None,
             trigger_rule=TriggerRule.ALL_SUCCESS,
-            resources=None,
+            resources=Resources(),
             run_as_user=None,
             task_concurrency=None,
             *args,
@@ -2261,7 +2261,11 @@ class BaseOperator(LoggingMixin):
                         d=dag.dag_id, t=task_id, tr=weight_rule))
         self.weight_rule = weight_rule
 
-        self.resources = Resources(**(resources or {}))
+        if isinstance(resources, Resources):
+            self.resources = resources
+        else:
+            self.resources = Resources(**(resources))
+
         self.run_as_user = run_as_user
         self.task_concurrency = task_concurrency
 
