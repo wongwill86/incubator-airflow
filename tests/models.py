@@ -50,6 +50,7 @@ from airflow.utils.trigger_rule import TriggerRule
 from mock import patch
 from parameterized import parameterized
 from tempfile import NamedTemporaryFile
+from nose.tools import timed
 
 DEFAULT_DATE = timezone.datetime(2016, 1, 1)
 TEST_DAGS_FOLDER = os.path.join(
@@ -1309,6 +1310,14 @@ class DagBagTest(unittest.TestCase):
         dagbag = models.DagBag(include_examples=True)
 
         self.assertEqual([], dagbag.process_file(None))
+
+    @timed(2)
+    def test_load_large_dag(self):
+        """
+        Test to make sure dag loading performance has not significantly changed
+        """
+
+        models.DagBag(os.path.join(TEST_DAGS_FOLDER, 'test_performance.py'))
 
 
 class TaskInstanceTest(unittest.TestCase):
