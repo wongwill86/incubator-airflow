@@ -109,29 +109,13 @@ class Resources(object):
         if gpus is None:
             gpus = configuration.getint('operators', 'default_gpus')
 
-        self._cpus = CpuResource(cpus)
-        self._ram = RamResource(ram)
-        self._disk = DiskResource(disk)
-        self._gpus = GpuResource(gpus)
+        self.cpus = CpuResource(cpus)
+        self.ram = RamResource(ram)
+        self.disk = DiskResource(disk)
+        self.gpus = GpuResource(gpus)
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
 
     def __repr__(self):
         return str(self.__dict__)
-
-    @property
-    def cpus(self):
-        return self._cpus
-
-    @property
-    def ram(self):
-        return self._ram
-
-    @property
-    def disk(self):
-        return self._disk
-
-    @property
-    def gpus(self):
-        return self._gpus
