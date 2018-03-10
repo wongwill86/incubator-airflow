@@ -433,7 +433,6 @@ class DagTest(unittest.TestCase):
 
         self.assertFalse(dag.test_cycle())
 
-        regexp = 'Cycle detected in DAG. '
         # test self loop
         dag = DAG(
             'dag',
