@@ -30,7 +30,7 @@ import textwrap
 import inspect
 
 from airflow import configuration, models, settings, AirflowException
-from airflow.exceptions import AirflowSkipException
+from airflow.exceptions import AirflowSkipException, AirflowDagCycleException
 from airflow.jobs import BackfillJob
 from airflow.models import DAG, TaskInstance as TI
 from airflow.models import State as ST
@@ -446,7 +446,7 @@ class DagTest(unittest.TestCase):
             opA = DummyOperator(task_id='A')
             opA.set_downstream(opA)
 
-        with self.assertRaisesRegexp(AirflowException, regexp):
+        with self.assertRaises(AirflowDagCycleException):
             dag.test_cycle()
 
         # test downstream self loop
@@ -468,7 +468,7 @@ class DagTest(unittest.TestCase):
             opD.set_downstream(opE)
             opE.set_downstream(opE)
 
-        with self.assertRaisesRegexp(AirflowException, regexp):
+        with self.assertRaises(AirflowDagCycleException):
             dag.test_cycle()
 
         # large loop
@@ -490,7 +490,7 @@ class DagTest(unittest.TestCase):
             opD.set_downstream(opE)
             opE.set_downstream(opA)
 
-        with self.assertRaisesRegexp(AirflowException, regexp):
+        with self.assertRaises(AirflowDagCycleException):
             dag.test_cycle()
 
         # test arbitrary loop
@@ -515,7 +515,7 @@ class DagTest(unittest.TestCase):
             opB.set_downstream(opF)
             opF.set_downstream(opA)
 
-        with self.assertRaisesRegexp(AirflowException, regexp):
+        with self.assertRaises(AirflowDagCycleException):
             dag.test_cycle()
 
 

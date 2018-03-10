@@ -63,7 +63,7 @@ import six
 from airflow import settings, utils
 from airflow.executors import GetDefaultExecutor, LocalExecutor
 from airflow import configuration
-from airflow.exceptions import AirflowException, AirflowSkipException, AirflowTaskTimeout
+from airflow.exceptions import AirflowException, AirflowSkipException, AirflowTaskTimeout, AirflowDagCycleException
 from airflow.dag.base_dag import BaseDag, BaseDagBag
 from airflow.ti_deps.deps.not_in_retry_period_dep import NotInRetryPeriodDep
 from airflow.ti_deps.deps.prev_dagrun_dep import PrevDagrunDep
@@ -344,9 +344,9 @@ class DagBag(BaseDagBag, LoggingMixin):
                         self.bag_dag(dag, parent_dag=dag, root_dag=dag)
                         found_dags.append(dag)
                         found_dags += dag.subdags
-                    except Exception as e:
-                        self.log.exception("Failed to import: %s", dag.full_filepath)
-                        self.import_errors[dag.full_filepath] = str(e)
+                    except AirflowDagCycleException as cycle_exception:
+                        self.log.exception("Failed to bag_dag: %s", dag.full_filepath)
+                        self.import_errors[dag.full_filepath] = str(cycle_exception)
                         self.file_last_changed[dag.full_filepath] = \
                             file_last_changed_on_disk
 
@@ -392,7 +392,7 @@ class DagBag(BaseDagBag, LoggingMixin):
     def bag_dag(self, dag, parent_dag, root_dag):
         """
         Adds the DAG into the bag, recurses into sub dags.
-        Throws AirflowException if there are issues with the dag. i.e. detected cycle
+        Throws AirflowDagCycleException if a cycle is detected in this dag or its subdags
         """
 
         dag.test_cycle()  # throws if a task cycle is found
@@ -414,7 +414,7 @@ class DagBag(BaseDagBag, LoggingMixin):
 
             self.dags[dag.dag_id] = dag
             self.log.debug('Loaded DAG {dag}'.format(**locals()))
-        except Exception as e:
+        except AirflowDagCycleException as cycle_exception:
             # There was an error in bagging the dag. Remove it from the list of dags
             self.log.exception('Exception bagging dag: {dag.dag_id}'.format(**locals()))
             # Only necessary at the root level since DAG.subdags automatically
@@ -423,7 +423,7 @@ class DagBag(BaseDagBag, LoggingMixin):
                 for subdag in subdags:
                     if subdag.dag_id in self.dags:
                         del self.dags[subdag.dag_id]
-            raise e
+            raise cycle_exception
 
 
     def collect_dags(
@@ -2790,13 +2790,13 @@ class BaseOperator(LoggingMixin):
     def task_type(self):
         return self.__class__.__name__
 
-    def add_only_new(self, s, item):
-        if item in s:
+    def add_only_new(self, item_set, item):
+        if item in item_set:
             raise AirflowException(
                 'Dependency {self}, {item} already registered'
                 ''.format(**locals()))
         else:
-            s.add(item)
+            item_set.add(item)
 
     def _set_relatives(self, task_or_task_list, upstream=False):
         try:
@@ -4123,7 +4123,7 @@ class DAG(BaseDag, LoggingMixin):
             if visit_map[descendant_id] == DagBag.CYCLE_IN_PROGRESS:
                 msg = "Cycle detected in DAG. Faulty task: {0} to {1}".format(
                     task_id, descendant_id)
-                raise AirflowException(msg)
+                raise AirflowDagCycleException(msg)
             else:
                 self._test_cycle_helper(visit_map, descendant_id)
 

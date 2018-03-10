@@ -20,7 +20,7 @@ from __future__ import unicode_literals
 import logging
 import unittest
 
-# import airflow.utils.logging
+import airflow.utils.logging
 from airflow import configuration
 from airflow.exceptions import AirflowException
 from airflow.utils.operator_resources import (
