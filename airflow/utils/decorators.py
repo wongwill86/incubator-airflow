@@ -31,7 +31,13 @@ from airflow.exceptions import AirflowException
 
 def apply_defaults(func):
 
-    sig_cache = dict()
+    import airflow.models
+    sig_cache = signature(func)
+    non_optional_args = {
+        name for (name, param) in sig_cache.parameters.items()
+        if param.default == param.empty and
+        param.name != 'self' and
+        param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)}
 
     """
     Function decorator that Looks for an argument named "default_args", and
@@ -49,9 +55,9 @@ def apply_defaults(func):
                 "Use keyword arguments when initializing operators")
         dag_args = {}
         dag_params = {}
-        import airflow.models
-        if kwargs.get('dag', None) or airflow.models._CONTEXT_MANAGER_DAG:
-            dag = kwargs.get('dag', None) or airflow.models._CONTEXT_MANAGER_DAG
+
+        dag = kwargs.get('dag', None) or airflow.models._CONTEXT_MANAGER_DAG
+        if dag:
             dag_args = copy(dag.default_args) or {}
             dag_params = copy(dag.params) or {}
 
@@ -70,19 +76,7 @@ def apply_defaults(func):
         dag_args.update(default_args)
         default_args = dag_args
 
-        # Cache the call to inspect.signature(func)
-        if func in sig_cache:
-            (sig, non_optional_args) = sig_cache[func]
-        else:
-            sig = signature(func)
-            non_optional_args = {
-                name for (name, param) in sig.parameters.items()
-                if param.default == param.empty and
-                param.name != 'self' and
-                param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)}
-            sig_cache[func] = (sig, non_optional_args)
-
-        for arg in sig.parameters:
+        for arg in sig_cache.parameters:
             if arg not in kwargs and arg in default_args:
                 kwargs[arg] = default_args[arg]
         missing_args = list(non_optional_args - set(kwargs))
