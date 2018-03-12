@@ -64,7 +64,7 @@ from airflow import settings, utils
 from airflow.executors import GetDefaultExecutor, LocalExecutor
 from airflow import configuration
 from airflow.exceptions import (
-    AirflowException, AirflowSkipException, AirflowTaskTimeout, AirflowDagCycleException
+    AirflowDagCycleException, AirflowException, AirflowSkipException, AirflowTaskTimeout
 )
 from airflow.dag.base_dag import BaseDag, BaseDagBag
 from airflow.ti_deps.deps.not_in_retry_period_dep import NotInRetryPeriodDep
