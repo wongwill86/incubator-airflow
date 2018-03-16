@@ -49,15 +49,16 @@ class TriggerRuleDep(BaseTIDep):
         qry = (
             session
             .query(
-                func.coalesce(func.sum(
-                    case([(TI.state == State.SUCCESS, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.SKIPPED, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.FAILED, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)), 0),
-                func.count(TI.task_id),
+                TI.state, func.count(TI.state)
+                # func.coalesce(func.sum(
+                #     case([(TI.state == State.SUCCESS, 1)], else_=0)), 0),
+                # func.coalesce(func.sum(
+                #     case([(TI.state == State.SKIPPED, 1)], else_=0)), 0),
+                # func.coalesce(func.sum(
+                #     case([(TI.state == State.FAILED, 1)], else_=0)), 0),
+                # func.coalesce(func.sum(
+                #     case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)), 0),
+                # func.count(TI.task_id),
             )
             .filter(
                 TI.dag_id == ti.dag_id,
@@ -69,7 +70,20 @@ class TriggerRuleDep(BaseTIDep):
             )
         )
 
-        successes, skipped, failed, upstream_failed, done = qry.first()
+        successes = skipped = failed = upstream_failed = 0
+        for row in qry.all():
+            state = row[0]
+            if state == State.SUCCESS:
+                successes = row[1]
+            elif state == State.SKIPPED:
+                skipped = row[1]
+            elif state == State.FAILED:
+                failed = row[1]
+            elif state == State.UPSTREAM_FAILED:
+                upstream_failed = row[1]
+
+        done = successes + skipped + failed + upstream_failed
+
         for dep_status in self._evaluate_trigger_rule(
                 ti=ti,
                 successes=successes,
