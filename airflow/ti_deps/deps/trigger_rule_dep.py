@@ -17,7 +17,14 @@ import airflow
 from airflow.ti_deps.deps.base_ti_dep import BaseTIDep
 from airflow.utils.db import provide_session
 from airflow.utils.state import State
+from collections import namedtuple
 
+SUCCESSES = 'successes'
+SKIPPED = 'skipped'
+FAILED = 'failed'
+UPSTREAM_FAILED = 'upstream_failed'
+DONE = 'done'
+UpstreamStats = namedtuple('UpstreamStats', [SUCCESSES, SKIPPED, FAILED, UPSTREAM_FAILED, DONE])
 
 class TriggerRuleDep(BaseTIDep):
     """
@@ -28,20 +35,9 @@ class TriggerRuleDep(BaseTIDep):
     IGNOREABLE = True
     IS_TASK_DEP = True
 
-    @provide_session
-    def _get_dep_statuses(self, ti, session, dep_context):
+    def _query_upstream_stats(self, ti, session):
         TI = airflow.models.TaskInstance
         TR = airflow.models.TriggerRule
-
-        # Checking that all upstream dependencies have succeeded
-        if not ti.task.upstream_list:
-            yield self._passing_status(
-                reason="The task instance did not have any upstream tasks.")
-            return
-
-        if ti.task.trigger_rule == TR.DUMMY:
-            yield self._passing_status(reason="The task had a dummy trigger rule set.")
-            return
 
         # TODO(unknown): this query becomes quite expensive with dags that have many
         # tasks. It should be refactored to let the task report to the dag run and get the
@@ -68,15 +64,70 @@ class TriggerRuleDep(BaseTIDep):
                     State.UPSTREAM_FAILED, State.SKIPPED]),
             )
         )
-
         successes, skipped, failed, upstream_failed, done = qry.first()
+        return UpstreamStats(successes, skipped, failed, upstream_failed, done)
+
+    def _query_upstream_stats_new(self, ti, session):
+        TI = airflow.models.TaskInstance
+        TR = airflow.models.TriggerRule
+
+        qry = (
+            session
+            .query(TI.state, func.count(TI.state).label('count'))
+            .filter(
+                TI.dag_id == ti.dag_id,
+                TI.task_id.in_(ti.task.upstream_task_ids),
+                TI.execution_date == ti.execution_date,
+                TI.state.in_([
+                    State.SUCCESS, State.FAILED,
+                    State.UPSTREAM_FAILED, State.SKIPPED]),
+            )
+            .group_by(TI.state)
+        )
+
+        successes = skipped = failed = upstream_failed = done = 0
+
+        for row in qry.all():
+            if row.state == State.SUCCESS:
+                successes = row.count
+            elif row.state == State.SKIPPED:
+                skipped = row.count
+            elif row.state == State.FAILED:
+                failed = row.count
+            elif row.state == State.UPSTREAM_FAILED:
+                upstream_failed = row.count
+
+        done = successes + skipped + failed + upstream_failed
+        return UpstreamStats(successes, skipped, failed, upstream_failed, done)
+
+
+
+    @provide_session
+    def _get_dep_statuses(self, ti, session, dep_context):
+        TI = airflow.models.TaskInstance
+        TR = airflow.models.TriggerRule
+
+        # Checking that all upstream dependencies have succeeded
+        if not ti.task.upstream_list:
+            yield self._passing_status(
+                reason="The task instance did not have any upstream tasks.")
+            return
+
+        if ti.task.trigger_rule == TR.DUMMY:
+            yield self._passing_status(reason="The task had a dummy trigger rule set.")
+            return
+
+        # stats = self._query_upstream_stats(ti, session)
+        stats = self._query_upstream_stats_new(ti, session)
+        # stats = UpstreamStats(0, 0, 0, 0, 0)
+
         for dep_status in self._evaluate_trigger_rule(
                 ti=ti,
-                successes=successes,
-                skipped=skipped,
-                failed=failed,
-                upstream_failed=upstream_failed,
-                done=done,
+                successes=stats.successes,
+                skipped=stats.skipped,
+                failed=stats.failed,
+                upstream_failed=stats.upstream_failed,
+                done=stats.done,
                 flag_upstream_failed=dep_context.flag_upstream_failed,
                 session=session):
             yield dep_status

@@ -364,15 +364,16 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
                 threading.current_thread().name = thread_name
                 start_time = time.time()
 
-                log.info("Started process (PID=%s) to work on %s",
+                log.info("Custom Started process (PID=%s) to work on %s",
                          os.getpid(), file_path)
                 scheduler_job = SchedulerJob(dag_ids=dag_id_white_list, log=log)
                 result = scheduler_job.process_file(file_path,
                                                     pickle_dags)
                 result_queue.put(result)
                 end_time = time.time()
+                elapsed = end_time - start_time
                 log.info(
-                    "Processing %s took %.3f seconds", file_path, end_time - start_time
+                    "Processing %s took %.3f seconds", file_path, elapsed
                 )
             except:
                 # Log exceptions through the logging framework.
@@ -918,15 +919,19 @@ class SchedulerJob(BaseJob):
                 make_transient(run)
                 active_dag_runs.append(run)
 
+        concurrency = dag.concurrency
+
         for run in active_dag_runs:
             self.log.debug("Examining active DAG run: %s", run)
             # this needs a fresh session sometimes tis get detached
             tis = run.get_task_instances(state=(State.NONE,
                                                 State.UP_FOR_RETRY))
 
+            print('process_task_instances() calling aredepmet for (iterator here)')
             # this loop is quite slow as it uses are_dependencies_met for
             # every task (in ti.is_runnable). This is also called in
             # update_state above which has already checked these tasks
+            start_time = datetime.now()
             for ti in tis:
                 task = dag.get_task(ti.task_id)
 
@@ -942,6 +947,11 @@ class SchedulerJob(BaseJob):
                         session=session):
                     self.log.debug('Queuing task: %s', ti)
                     queue.append(ti.key)
+
+                    if len(queue) >= concurrency:
+                        break
+
+            print('process_task_instances are deps smet %s found (%s) tasks' % (datetime.now() - start_time, len(queue)))
 
         session.close()
 
@@ -1739,6 +1749,9 @@ class SchedulerJob(BaseJob):
         :return: a list of SimpleDags made from the Dags found in the file
         :rtype: list[SimpleDag]
         """
+        import cProfile
+        pr = cProfile.Profile()
+        pr.enable()
         self.log.info("Processing file %s for tasks to queue", file_path)
         # As DAGs are parsed from this file, they will be converted into SimpleDags
         simple_dags = []
@@ -1791,6 +1804,8 @@ class SchedulerJob(BaseJob):
 
         self._process_dags(dagbag, dags, ti_keys_to_schedule)
 
+        print('Process_file() calling are_deps met for %s' % len(ti_keys_to_schedule))
+        start_time = datetime.now()
         for ti_key in ti_keys_to_schedule:
             dag = dagbag.dags[ti_key[0]]
             task = dag.get_task(ti_key[1])
@@ -1819,6 +1834,7 @@ class SchedulerJob(BaseJob):
             self.log.info("Creating / updating %s in ORM", ti)
             session.merge(ti)
         # commit batch
+        print('process_file are deps met %s' % (datetime.now() - start_time))
         session.commit()
 
         # Record import errors into the ORM
@@ -1831,11 +1847,15 @@ class SchedulerJob(BaseJob):
         except Exception:
             self.log.exception("Error killing zombies!")
 
+        pr.disable()
+        # if elapsed > 1:
+        pr.dump_stats(file_path + str(os.getpid()) + 'single.cprof')
         return simple_dags
 
     @provide_session
     def heartbeat_callback(self, session=None):
         Stats.gauge('scheduler_heartbeat', 1, 1)
+
 
 
 class BackfillJob(BaseJob):

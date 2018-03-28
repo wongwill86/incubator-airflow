@@ -2964,3 +2964,26 @@ class SchedulerJobTest(unittest.TestCase):
             self.assertEqual(state, ti.state)
 
         session.close()
+
+    def test_load_big_dag(self):
+        print('\n\n\nherehhrehrherhehre')
+        db = DagBag('/home/wwong/src/air-tasks/dags/synaptor/', include_examples=False)
+        dag = db.get_dag('five_stage')
+        dag.sync_to_db()
+
+        session = settings.Session()
+        dm = session.query(DagModel).filter(
+            DagModel.dag_id == 'five_stage').first()
+        dm.is_paused = False
+        session.commit()
+
+        dag.create_dagrun(
+            run_id='test_run',
+            state=State.RUNNING,
+            external_trigger=True
+        )
+
+        scheduler_job = SchedulerJob('five_stage', False)
+        result = scheduler_job.process_file('/home/wwong/src/air-tasks/dags/synaptor/interleaved.py')
+
+        self.assertTrue(False)

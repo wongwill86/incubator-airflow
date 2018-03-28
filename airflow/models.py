@@ -248,6 +248,9 @@ class DagBag(BaseDagBag, LoggingMixin):
         Given a path to a python module or zip file, this method imports
         the module and look for dag objects within it.
         """
+        # import cProfile
+        # pr = cProfile.Profile()
+        # pr.enable()
         found_dags = []
 
         # todo: raise exception?
@@ -341,6 +344,8 @@ class DagBag(BaseDagBag, LoggingMixin):
 
 
         self.file_last_changed[filepath] = file_last_changed_on_disk
+        # pr.disable()
+        # pr.dump_stats(filepath + '.cprof')
         return found_dags
 
     @provide_session
@@ -2769,6 +2774,26 @@ class BaseOperator(LoggingMixin):
                 self.add_only_new(self._downstream_task_ids, task.task_id)
                 task.add_only_new(task._upstream_task_ids, self.task_id)
 
+        # TODO REMOVE THIS CRAP
+        # self.detect_downstream_cycle()
+
+
+    def detect_downstream_cycle(self, task=None):
+        """
+        When invoked, this routine will raise an exception if a cycle is
+        detected downstream from self. It is invoked when tasks are added to
+        the DAG to detect cycles.
+        """
+        if not task:
+            task = self
+        for t in self.get_direct_relatives():
+            if task is t:
+                msg = "Cycle detected in DAG. Faulty task: {0}".format(task)
+                raise AirflowException(msg)
+            else:
+                t.detect_downstream_cycle(task=task)
+        return False
+
     def set_downstream(self, task_or_task_list):
         """
         Set a task, or a task task to be directly downstream from the current
@@ -3388,7 +3413,7 @@ class DAG(BaseDag, LoggingMixin):
 
     @property
     def roots(self):
-        return [t for t in self.tasks if not t.downstream_list]
+        return [t for t in self.task_dict.values() if not t.downstream_task_ids]
 
     def topological_sort(self):
         """
@@ -4621,6 +4646,41 @@ class DagRun(Base, LoggingMixin):
         return tis.all()
 
     @provide_session
+    def get_task_instances_yield(self, state=None, session=None):
+        """
+        Returns the task instances for this dag run
+        """
+        TI = TaskInstance
+        tis = session.query(TI).filter(
+            TI.dag_id == self.dag_id,
+            TI.execution_date == self.execution_date,
+        )
+        if state:
+            if isinstance(state, six.string_types):
+                tis = tis.filter(TI.state == state)
+            else:
+                # this is required to deal with NULL values
+                if None in state:
+                    tis = tis.filter(
+                        or_(TI.state.in_(state),
+                            TI.state.is_(None))
+                    )
+                else:
+                    tis = tis.filter(TI.state.in_(state))
+
+        if self.dag and self.dag.partial:
+            tis = tis.filter(TI.task_id.in_(self.dag.task_ids))
+
+        results = iter(tis)
+
+        while True:
+            objs = list(itertools.islice(results, 100))
+            if not objs:
+                break
+            for obj in objs:
+                yield obj
+
+    @provide_session
     def get_task_instance(self, task_id, session=None):
         """
         Returns the task instance specified by task_id for this dag run
@@ -4702,9 +4762,11 @@ class DagRun(Base, LoggingMixin):
         none_depends_on_past = all(not t.task.depends_on_past for t in unfinished_tasks)
         none_task_concurrency = all(t.task.task_concurrency is None for t in unfinished_tasks)
         # small speed up
+        start_time = datetime.now()
         if unfinished_tasks and none_depends_on_past and none_task_concurrency:
             # todo: this can actually get pretty slow: one task costs between 0.01-015s
             no_dependencies_met = True
+            print('update_state calling are_deps met for %s' % len(unfinished_tasks))
             for ut in unfinished_tasks:
                 # We need to flag upstream and check for changes because upstream
                 # failures can result in deadlock false positives
@@ -4718,13 +4780,14 @@ class DagRun(Base, LoggingMixin):
                     no_dependencies_met = False
                     break
 
+        print('update_state are deps met %s' % (datetime.now() - start_time))
         duration = (datetime.utcnow() - start_dttm).total_seconds() * 1000
         Stats.timing("dagrun.dependency-check.{}.{}".
                      format(self.dag_id, self.execution_date), duration)
 
         # future: remove the check on adhoc tasks (=active_tasks)
         if len(tis) == len(dag.active_tasks):
-            root_ids = [t.task_id for t in dag.roots]
+            root_ids = {t.task_id for t in dag.roots}
             roots = [t for t in tis if t.task_id in root_ids]
 
             # if all roots finished and at least on failed, the run failed
@@ -4765,9 +4828,9 @@ class DagRun(Base, LoggingMixin):
         tis = self.get_task_instances(session=session)
 
         # check for removed tasks
-        task_ids = []
+        task_ids = set()
         for ti in tis:
-            task_ids.append(ti.task_id)
+            task_ids.add(ti.task_id)
             try:
                 dag.get_task(ti.task_id)
             except AirflowException:

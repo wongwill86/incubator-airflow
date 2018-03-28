@@ -15,11 +15,18 @@
 import unittest
 from datetime import datetime
 
-from airflow.models import BaseOperator, TaskInstance
+import math
+import airflow
+from airflow import settings
+from airflow.operators.dummy_operator import DummyOperator
+from airflow.models import BaseOperator, TaskInstance, DAG
 from airflow.utils.trigger_rule import TriggerRule
+from airflow.ti_deps.dep_context import DepContext
 from airflow.ti_deps.deps.trigger_rule_dep import TriggerRuleDep
 from airflow.utils.state import State
+from airflow.utils.weight_rule import WeightRule
 
+DEFAULT_DATE = datetime(2016, 1, 1)
 
 class TriggerRuleDepTest(unittest.TestCase):
 
@@ -250,3 +257,76 @@ class TriggerRuleDepTest(unittest.TestCase):
 
         self.assertEqual(len(dep_statuses), 1)
         self.assertFalse(dep_statuses[0].passed)
+
+    def test_query_upstream_stats(self):
+        """
+        Test returns that all upstream are ready to be processed
+        """
+        import datetime
+        start = datetime.datetime.now()
+        dag_id = 'TriggerRuleDepTest.test_upstream_ready'
+        dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
+
+        upstream_tasks =  []
+        misc_tasks = []
+        width = 50000
+        with dag:
+            end = DummyOperator(task_id='downstream_task')
+            for task_id in range(0,width):
+                upstream = DummyOperator(task_id='upstream_task_%s' % task_id,
+                                         weight_rule=WeightRule.ABSOLUTE)
+                upstream.set_downstream(end)
+                upstream_tasks.append(upstream)
+
+            for task_id in range(0, 2 * width):
+                misc = DummyOperator(task_id='misc_task_%s' % task_id)
+                misc_tasks.append(misc)
+
+            session = settings.Session()
+
+            dag.clear()
+            dr = dag.create_dagrun(run_id="test",
+                                   state=State.SUCCESS,
+                                   execution_date=DEFAULT_DATE,
+                                   start_date=DEFAULT_DATE,
+                                   session=session)
+            TI = airflow.models.TaskInstance
+
+            print('create elapsed %s' % (datetime.datetime.now() - start))
+            for index in range(0, len(upstream_tasks)):
+                ti = TI(upstream_tasks[index], dr.execution_date)
+                next_state = State.NONE
+                if index < 100:
+                    next_state = State.SUCCESS
+                elif index < 201:
+                    next_state = State.SKIPPED
+                elif index < 303:
+                    next_state = State.FAILED
+                elif index < 406:
+                    next_state = State.UPSTREAM_FAILED
+                elif index < 510:
+                    next_state = State.UP_FOR_RETRY
+                elif index < 615:
+                    next_state = State.RUNNING
+                if next_state:
+                    ti.set_state(next_state, session)
+
+            ti = dr.get_task_instance(task_id=end.task_id)
+            ti.task = end
+
+            stats = TriggerRuleDep()._query_upstream_stats(ti, session)
+
+            self.assertEqual(stats.successes, 100)
+            self.assertEqual(stats.skipped, 101)
+            self.assertEqual(stats.failed, 102)
+            self.assertEqual(stats.upstream_failed, 103)
+            self.assertEqual(stats.done, 100 + 101 + 102 + 103)
+            self.assertFalse(True)
+
+
+
+
+
+
+
+
