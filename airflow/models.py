@@ -4643,6 +4643,8 @@ class DagRun(Base, LoggingMixin):
         if self.dag and self.dag.partial:
             tis = tis.filter(TI.task_id.in_(self.dag.task_ids))
 
+        tis = tis.order_by(TI.priority_weight)
+
         return tis.all()
 
     @provide_session
