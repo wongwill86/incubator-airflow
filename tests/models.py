@@ -765,6 +765,37 @@ class DagRunTest(unittest.TestCase):
         self.assertEqual(dr.state, State.RUNNING)
         self.assertEqual(dr2.state, State.RUNNING)
 
+    def test_get_task_instances_ordered(self):
+        """
+        Test to make sure get_task instances are returned in priority_weight
+        descending order
+        """
+
+        session = settings.Session()
+
+        dag = DAG(
+            'test_dagrun_get_task_instances_ordered',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        with dag:
+            for i in range(1,5):
+                DummyOperator(task_id='task_%s' % i,
+                              weight_rule=WeightRule.ABSOLUTE,
+                              priority_weight=i)
+        dag.clear()
+
+        now = datetime.datetime.now()
+        dr = dag.create_dagrun(run_id='test_dagrun_get_task_instances_ordered',
+                               state=State.RUNNING,
+                               execution_date=now,
+                               start_date=now)
+
+        tis = dr.get_task_instances(state=(State.NONE, State.UP_FOR_RETRY))
+        self.assertEqual(4, len(tis))
+        for i in range(1, 5):
+            self.assertEqual(tis[i - 1].priority_weight, 5 - i)
+
     def test_get_task_instance_on_empty_dagrun(self):
         """
         Make sure that a proper value is returned when a dagrun has no task instances

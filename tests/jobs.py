@@ -93,6 +93,7 @@ class BackfillJobTest(unittest.TestCase):
 
         scheduler = SchedulerJob()
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         scheduler._process_task_instances(target_dag, queue=queue)
         self.assertFalse(queue.append.called)
 
@@ -1822,6 +1823,7 @@ class SchedulerJobTest(unittest.TestCase):
         self.assertIsNotNone(dr)
 
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.append.assert_called_with(
@@ -1854,6 +1856,7 @@ class SchedulerJobTest(unittest.TestCase):
             start_date=DEFAULT_DATE)
 
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.put.assert_not_called()
@@ -1880,6 +1883,7 @@ class SchedulerJobTest(unittest.TestCase):
         self.assertIsNone(dr)
 
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.put.assert_not_called()
@@ -1912,6 +1916,7 @@ class SchedulerJobTest(unittest.TestCase):
         session.close()
 
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.put.assert_not_called()
@@ -1950,10 +1955,99 @@ class SchedulerJobTest(unittest.TestCase):
             owner='airflow')
 
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         scheduler._process_task_instances(dag, queue=queue)
 
         tis = dr.get_task_instances()
         self.assertEquals(len(tis), 2)
+
+    def test_scheduler_limit_by_dag_concurrency(self):
+        """
+        Test to return only the number of tasks as the dag concurrency allows
+        """
+        dag_concurrency = 2
+        dag = DAG(
+            dag_id='test_scheduler_limit_by_dag_concurrency',
+            concurrency = dag_concurrency,
+            start_date=DEFAULT_DATE)
+
+        with dag:
+            DummyOperator(task_id='dummy_1', owner='airflow')
+            DummyOperator(task_id='dummy_2', owner='airflow')
+
+        scheduler = SchedulerJob()
+        dag.clear()
+
+        scheduler.create_dag_run(dag)
+        scheduler.create_dag_run(dag)
+
+        queue = []
+        scheduler._process_task_instances(dag, queue=queue)
+
+        self.assertEquals(dag_concurrency, len(queue))
+
+    def test_scheduler_limit_by_pool_concurrency(self):
+        """
+        Test to return only the number of tasks as the pool concurrency allows despite
+        the dag_concurrency allowing more tasks
+        """
+        dag_concurrency = 10
+        dag = DAG(
+            dag_id='test_scheduler_limit_by_dag_concurrency',
+            concurrency = dag_concurrency,
+            start_date=DEFAULT_DATE)
+
+        with dag:
+            DummyOperator(task_id='dummy_1', pool='pool', owner='airflow')
+            DummyOperator(task_id='dummy_2', owner='airflow')
+
+        scheduler = SchedulerJob()
+        dag.clear()
+
+        scheduler.create_dag_run(dag)
+        scheduler.create_dag_run(dag)
+
+        session = settings.Session()
+        session.add(Pool(pool='pool', slots=1))
+        session.commit()
+
+        queue = []
+        scheduler._process_task_instances(dag, queue=queue)
+
+        self.assertEquals(3, len(queue))
+
+    def test_scheduler_limit_by_dag_and_pool_concurrency(self):
+        """
+        Test to return only the number concurrent tasks despite having more
+        open pool slots
+        """
+        dag_concurrency = 4
+        dag = DAG(
+            dag_id='test_scheduler_limit_by_dag_concurrency',
+            concurrency = dag_concurrency,
+            start_date=DEFAULT_DATE)
+
+        with dag:
+            DummyOperator(task_id='dummy_1', pool='pool', owner='airflow')
+            DummyOperator(task_id='dummy_2', pool='pool', owner='airflow')
+            DummyOperator(task_id='dummy_3', pool='pool', owner='airflow')
+            DummyOperator(task_id='dummy_4', pool='pool', owner='airflow')
+            DummyOperator(task_id='dummy_5', pool='pool', owner='airflow')
+
+        scheduler = SchedulerJob()
+        dag.clear()
+
+        scheduler.create_dag_run(dag)
+        scheduler.create_dag_run(dag)
+
+        session = settings.Session()
+        session.add(Pool(pool='pool', slots=100))
+        session.commit()
+
+        queue = []
+        scheduler._process_task_instances(dag, queue=queue)
+
+        self.assertEquals(4, len(queue))
 
     def test_scheduler_verify_max_active_runs(self):
         """
@@ -2088,6 +2182,7 @@ class SchedulerJobTest(unittest.TestCase):
         dag.max_active_runs = 1
 
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         # and schedule them in, so we can check how many
         # tasks are put on the queue (should be one, not 3)
         scheduler._process_task_instances(dag, queue=queue)

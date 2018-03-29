@@ -920,6 +920,15 @@ class SchedulerJob(BaseJob):
                 active_dag_runs.append(run)
 
         concurrency = dag.concurrency
+        print('concurrency is ')
+        print(concurrency)
+
+        pool_to_slots = {p.pool: p.open_slots(session=session) for p in session.query(models.Pool).all()}
+        pool_to_slots[None] = conf.getint('core', 'non_pooled_task_slot_count')
+        pool_count = defaultdict(int)
+
+        print('pool slots is')
+        print(pool_to_slots)
 
         for run in active_dag_runs:
             self.log.debug("Examining active DAG run: %s", run)
@@ -942,17 +951,29 @@ class SchedulerJob(BaseJob):
                 if task.adhoc:
                     continue
 
+                # skip returning any tasks we won't be able to schedule for
+                # execution for this run
+                if pool_count[ti.pool] >= pool_to_slots[ti.pool]:
+                    continue
+
                 if ti.are_dependencies_met(
                         dep_context=DepContext(flag_upstream_failed=True),
                         session=session):
                     self.log.debug('Queuing task: %s', ti)
                     queue.append(ti.key)
+                    pool_count[ti.pool] = pool_count[ti.pool] + 1
+                    print('pool count is ')
+                    print(pool_count)
 
                     if len(queue) >= concurrency:
-                        break
+                        print('process_task_instances finished early are deps smet %s found (%s) tasks' % (datetime.now() - start_time, len(queue)))
+                        session.close()
+                        return
 
             print('process_task_instances are deps smet %s found (%s) tasks' % (datetime.now() - start_time, len(queue)))
 
+        print('pool count is ')
+        print(pool_count)
         session.close()
 
     @provide_session
