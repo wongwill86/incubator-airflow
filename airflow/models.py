@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -4733,10 +4731,13 @@ class DagRun(Base, LoggingMixin):
         ).first()
 
     @provide_session
-    def update_state(self, session=None, tasks_not_ready=None):
+    def update_state(self, session=None, task_ids_not_ready=None):
         """
         Determines the overall state of the DagRun based on the state
         of its TaskInstances.
+
+        task_ids_not_ready used for convenience to keep track of which tasks
+        don't have dependencies met so we don't need to recompute it.
 
         :return: State
         """
@@ -4778,8 +4779,8 @@ class DagRun(Base, LoggingMixin):
                         flag_upstream_failed=True,
                         ignore_in_retry_period=True),
                     session=session)
-                if tasks_not_ready and not deps_met and (ut.state == State.NONE or ut.state == State.UP_FOR_RETRY):
-                    tasks_not_ready.add((ut.execution_date, ut.task_id))
+                if task_ids_not_ready and not deps_met:
+                    task_ids_not_ready.add(ut.task_id)
 
                 if deps_met or old_state != ut.current_state(session=session):
                     no_dependencies_met = False

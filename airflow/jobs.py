@@ -881,18 +881,44 @@ class SchedulerJob(BaseJob):
                 )
                 return next_run
 
-    def _process_task_instances(self, dag, queue):
+    @provide_session
+    def _get_pool_slots(self, dag, session=None):
+        pool_to_slots_free = {None: conf.getint('core', 'non_pooled_task_slot_count')}
+        P = models.Pool
+        TI = models.TaskInstance
+        pool_query = session.query(P)
+        if dag:
+            dag_pool_query = session.query(TI.pool).distinct(TI.pool).filter(
+                and_(
+                    TI.dag_id == dag.dag_id,
+                    or_(
+                        TI.state.in_(State.unfinished()),
+                        TI.state.is_(None)
+                        )
+                )
+            )
+            dag_pools = dag_pool_query.all()
+            pool_query = pool_query.filter(P.pool.in_([pool for pool, in dag_pools]))
+
+            if None not in dag_pools:
+                del pool_to_slots_free[None]
+
+        pool_to_slots_free.update({p.pool: p.open_slots(session=session) for p in pool_query.all()})
+        return pool_to_slots_free
+
+    @provide_session
+    def _process_task_instances(self, dag, queue, session=None):
         """
         This method schedules the tasks for a single DAG by looking at the
         active DAG runs and adding task instances that should run to the
         queue.
         """
-        session = settings.Session()
-
         # update the state of the previously active dag runs
         dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session)
         active_dag_runs = []
-        tasks_not_ready = set()
+
+        concurrency = dag.concurrency
+        pool_to_slots_free = self._get_pool_to_slots(session=session)
 
         for run in dag_runs:
             self.log.info("Examining DAG run %s", run)
@@ -904,79 +930,73 @@ class SchedulerJob(BaseJob):
                 )
                 continue
 
-            if len(active_dag_runs) >= dag.max_active_runs:
-                self.log.info("Active dag runs > max_active_run.")
-                continue
-
             # skip backfill dagruns for now as long as they are not really scheduled
             if run.is_backfill:
                 continue
 
             # todo: run.dag is transient but needs to be set
             run.dag = dag
+
             # todo: preferably the integrity check happens at dag collection time
             run.verify_integrity(session=session)
-            run.update_state(session=session, tasks_not_ready=tasks_not_ready)
+
+            # keep track of the tasks we found have dependencies not met in update_state
+            task_ids_not_ready = set()
+            run.update_state(session=session, task_ids_not_ready=task_ids_not_ready)
             if run.state == State.RUNNING:
                 make_transient(run)
                 active_dag_runs.append(run)
 
-        concurrency = dag.concurrency
-        print('concurrency is ')
-        print(concurrency)
+                self.log.debug("Examining active DAG run: %s", run)
+                # this needs a fresh session sometimes tis get detached
+                tis = run.get_task_instances(state=(State.NONE, State.UP_FOR_RETRY))
 
-        pool_to_slots = {p.pool: p.open_slots(session=session) for p in session.query(models.Pool).all()}
-        pool_to_slots[None] = conf.getint('core', 'non_pooled_task_slot_count')
-        pool_count = defaultdict(int)
+                # this loop is quite slow as it uses are_dependencies_met for
+                # every task (in ti.is_runnable). We've also checked some of
+                # the same task dependencies in update_state above, but
+                # we've noted which tasks don't have met dependencies already
+                # in task_ids_not_ready
+                start_time = datetime.now()
+                for ti in tis:
+                    # Don't return tasks we can't possibly schedule due to pool
+                    # size constraints
+                    if ti.pool not in pool_to_slots_free or not pool_to_slots_free[ti.pool]:
+                        continue
 
-        for run in active_dag_runs:
-            self.log.debug("Examining active DAG run: %s", run)
-            # this needs a fresh session sometimes tis get detached
-            tis = run.get_task_instances(state=(State.NONE,
-                                                State.UP_FOR_RETRY))
+                    if (ti.execution_date, ti.task_id) in task_ids_not_ready:
+                        continue
 
-            print('process_task_instances() calling aredepmet for (iterator here)')
-            # this loop is quite slow as it uses are_dependencies_met for
-            # every task (in ti.is_runnable). This is also called in
-            # update_state above which has already checked these tasks
-            start_time = datetime.now()
-            for ti in tis:
-                task = dag.get_task(ti.task_id)
+                    # we already found that this task's dependencies were not
+                    # met in update_state above, no need to check again
+                    if ti.task_id in task_ids_not_ready:
+                        continue
 
-                # fixme: ti.task is transient but needs to be set
-                ti.task = task
+                    # future: remove adhoc
+                    if task.adhoc:
+                        continue
 
-                # future: remove adhoc
-                if task.adhoc:
-                    continue
+                    task = dag.get_task(ti.task_id)
 
-                # skip returning any tasks we won't be able to schedule for
-                # execution for this run
-                if pool_count[ti.pool] >= pool_to_slots[ti.pool]:
-                    continue
+                    # fixme: ti.task is transient but needs to be set
+                    ti.task = task
 
-                if (ti.execution_date, ti.task_id) in tasks_not_ready:
-                    continue
+                    if ti.are_dependencies_met(
+                            dep_context=DepContext(flag_upstream_failed=True),
+                            session=session):
+                        self.log.debug('Queuing task: %s', ti)
+                        queue.append(ti.key)
 
-                if ti.are_dependencies_met(
-                        dep_context=DepContext(flag_upstream_failed=True),
-                        session=session):
-                    self.log.debug('Queuing task: %s', ti)
-                    queue.append(ti.key)
-                    pool_count[ti.pool] = pool_count[ti.pool] + 1
-                    print('pool count is ')
-                    print(pool_count)
+                        # decrement number of slots free for this pool
+                        pool_to_slots_free[ti.pool] = pool_to_slots_free[ti.pool] - 1
 
-                    if len(queue) >= concurrency:
-                        print('process_task_instances finished early are deps smet %s found (%s) tasks' % (datetime.now() - start_time, len(queue)))
-                        session.close()
-                        return
+                        # Stop running if we can't possible schedule any more
+                        # tasks for this dag
+                        if len(queue) >= concurrency:
+                            return
 
-            print('process_task_instances are deps smet %s found (%s) tasks' % (datetime.now() - start_time, len(queue)))
-
-        print('pool count is ')
-        print(pool_count)
-        session.close()
+            if len(active_dag_runs) >= dag.max_active_runs:
+                self.log.info("Active dag runs > max_active_run.")
+                return
 
     @provide_session
     def _change_state_for_tis_without_dagrun(self,
@@ -1103,6 +1123,8 @@ class SchedulerJob(BaseJob):
             ti_query = ti_query.filter(or_(TI.state == None, TI.state.in_(states)))
         else:
             ti_query = ti_query.filter(TI.state.in_(states))
+
+        print('execution query is %s' % ti_query)
 
         task_instances_to_examine = ti_query.all()
 
