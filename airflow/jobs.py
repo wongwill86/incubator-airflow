@@ -892,6 +892,8 @@ class SchedulerJob(BaseJob):
         # update the state of the previously active dag runs
         dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session)
         active_dag_runs = []
+        tasks_not_ready = set()
+
         for run in dag_runs:
             self.log.info("Examining DAG run %s", run)
             # don't consider runs that are executed in the future
@@ -914,7 +916,7 @@ class SchedulerJob(BaseJob):
             run.dag = dag
             # todo: preferably the integrity check happens at dag collection time
             run.verify_integrity(session=session)
-            run.update_state(session=session)
+            run.update_state(session=session, tasks_not_ready=tasks_not_ready)
             if run.state == State.RUNNING:
                 make_transient(run)
                 active_dag_runs.append(run)
@@ -926,9 +928,6 @@ class SchedulerJob(BaseJob):
         pool_to_slots = {p.pool: p.open_slots(session=session) for p in session.query(models.Pool).all()}
         pool_to_slots[None] = conf.getint('core', 'non_pooled_task_slot_count')
         pool_count = defaultdict(int)
-
-        print('pool slots is')
-        print(pool_to_slots)
 
         for run in active_dag_runs:
             self.log.debug("Examining active DAG run: %s", run)
@@ -954,6 +953,9 @@ class SchedulerJob(BaseJob):
                 # skip returning any tasks we won't be able to schedule for
                 # execution for this run
                 if pool_count[ti.pool] >= pool_to_slots[ti.pool]:
+                    continue
+
+                if (ti.execution_date, ti.task_id) in tasks_not_ready:
                     continue
 
                 if ti.are_dependencies_met(

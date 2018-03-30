@@ -4733,7 +4733,7 @@ class DagRun(Base, LoggingMixin):
         ).first()
 
     @provide_session
-    def update_state(self, session=None):
+    def update_state(self, session=None, tasks_not_ready=None):
         """
         Determines the overall state of the DagRun based on the state
         of its TaskInstances.
@@ -4778,6 +4778,9 @@ class DagRun(Base, LoggingMixin):
                         flag_upstream_failed=True,
                         ignore_in_retry_period=True),
                     session=session)
+                if tasks_not_ready and not deps_met and (ut.state == State.NONE or ut.state == State.UP_FOR_RETRY):
+                    tasks_not_ready.add((ut.execution_date, ut.task_id))
+
                 if deps_met or old_state != ut.current_state(session=session):
                     no_dependencies_met = False
                     break
