@@ -882,11 +882,23 @@ class SchedulerJob(BaseJob):
                 return next_run
 
     @provide_session
-    def _get_pool_slots(self, dag, session=None):
-        pool_to_slots_free = {None: conf.getint('core', 'non_pooled_task_slot_count')}
+    def _get_pool_slots(self, dag=None, session=None,
+                        non_pooled_task_slot_count=conf.getint(
+                            'core', 'non_pooled_task_slot_count')):
+        """
+        Query for a snapshot of the pool slots currently available from the database
+
+        :param dag: Restrict query to only pools used in this dag
+
+        :return: dict of pool name to slots free.
+        """
+        pool_to_slots_free = dict()
+
         P = models.Pool
         TI = models.TaskInstance
         pool_query = session.query(P)
+
+        include_non_pooled_slot = True
         if dag:
             dag_pool_query = session.query(TI.pool).distinct(TI.pool).filter(
                 and_(
@@ -897,13 +909,29 @@ class SchedulerJob(BaseJob):
                         )
                 )
             )
-            dag_pools = dag_pool_query.all()
-            pool_query = pool_query.filter(P.pool.in_([pool for pool, in dag_pools]))
+            dag_pools = {pool for pool, in dag_pool_query.all()}
+            pool_query = pool_query.filter(P.pool.in_(dag_pools))
 
             if None not in dag_pools:
-                del pool_to_slots_free[None]
+                include_non_pooled_slot = False
 
-        pool_to_slots_free.update({p.pool: p.open_slots(session=session) for p in pool_query.all()})
+        if include_non_pooled_slot:
+            used_or_queued_slots = session.query(TI).filter(
+                and_(
+                    TI.pool.is_(None),
+                    TI.state.in_([State.RUNNING, State.QUEUED])
+                )
+            ).count()
+            non_pooled_task_slots_free = non_pooled_task_slot_count - used_or_queued_slots
+
+            if non_pooled_task_slots_free > 0:
+                pool_to_slots_free[None] = non_pooled_task_slots_free
+
+        for p in pool_query.all():
+            open_slots = p.open_slots(session=session)
+            if open_slots:
+                pool_to_slots_free[p.pool] = open_slots
+
         return pool_to_slots_free
 
     @provide_session
@@ -940,7 +968,6 @@ class SchedulerJob(BaseJob):
             # todo: preferably the integrity check happens at dag collection time
             run.verify_integrity(session=session)
 
-            # keep track of the tasks we found have dependencies not met in update_state
             task_ids_not_ready = set()
             run.update_state(session=session, task_ids_not_ready=task_ids_not_ready)
             if run.state == State.RUNNING:
@@ -951,24 +978,16 @@ class SchedulerJob(BaseJob):
                 # this needs a fresh session sometimes tis get detached
                 tis = run.get_task_instances(state=(State.NONE, State.UP_FOR_RETRY))
 
-                # this loop is quite slow as it uses are_dependencies_met for
-                # every task (in ti.is_runnable). We've also checked some of
-                # the same task dependencies in update_state above, but
-                # we've noted which tasks don't have met dependencies already
-                # in task_ids_not_ready
-                start_time = datetime.now()
+                # this loop is quite slow as it uses are_dependencies_met for every task
+                # (in ti.is_runnable).
                 for ti in tis:
-                    # Don't return tasks we can't possibly schedule due to pool
-                    # size constraints
+                    if ti.task_id in task_ids_not_ready:
+                        continue
+
                     if ti.pool not in pool_to_slots_free or not pool_to_slots_free[ti.pool]:
                         continue
 
                     if (ti.execution_date, ti.task_id) in task_ids_not_ready:
-                        continue
-
-                    # we already found that this task's dependencies were not
-                    # met in update_state above, no need to check again
-                    if ti.task_id in task_ids_not_ready:
                         continue
 
                     # future: remove adhoc
@@ -986,12 +1005,13 @@ class SchedulerJob(BaseJob):
                         self.log.debug('Queuing task: %s', ti)
                         queue.append(ti.key)
 
-                        # decrement number of slots free for this pool
-                        pool_to_slots_free[ti.pool] = pool_to_slots_free[ti.pool] - 1
+                        if pool_to_slots_free[ti.pool] > 1:
+                            pool_to_slots_free[ti.pool] = pool_to_slots_free[ti.pool] - 1
+                        else:
+                            # remove last free slot
+                            del pool_to_slots_free[ti.pool]
 
-                        # Stop running if we can't possible schedule any more
-                        # tasks for this dag
-                        if len(queue) >= concurrency:
+                        if len(queue) >= concurrency or not len(pool_to_slots_free):
                             return
 
             if len(active_dag_runs) >= dag.max_active_runs:

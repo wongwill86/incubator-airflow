@@ -4736,8 +4736,9 @@ class DagRun(Base, LoggingMixin):
         Determines the overall state of the DagRun based on the state
         of its TaskInstances.
 
-        task_ids_not_ready used for convenience to keep track of which tasks
-        don't have dependencies met so we don't need to recompute it.
+        :param task_ids_not_ready: Set of tasks ids that have failed its default
+        DepContext task dependencies. Used mainly to cache results from
+        task_instance.are_dependencies_met which is fairly expensive to run.
 
         :return: State
         """

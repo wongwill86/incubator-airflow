@@ -3093,7 +3093,6 @@ class SchedulerJobTest(unittest.TestCase):
         session = settings.Session()
         session.add(Pool(pool=TASKED_POOL, slots=1))
         session.add(Pool(pool=UNTASKED_POOL, slots=2))
-        session.commit()
 
         non_pooled_task_slots = configuration.getint('core', 'non_pooled_task_slot_count')
 
@@ -3114,8 +3113,8 @@ class SchedulerJobTest(unittest.TestCase):
         pool_slots_dag_no_pool = scheduler._get_pool_slots(dag_no_pool)
         self.assertEquals(1, len(pool_slots_dag_no_pool))
         self.assertEquals(non_pooled_task_slots, pool_slots_dag_no_pool[None])
-        print(pool_slots_dag_no_pool)
-        print('comppleted')
+
+        session.query(models.TaskInstance).delete()
 
         # Test than when both pools and no pools are specified, both the
         # default configuration non_pooled_task_slot_count is returned as well
@@ -3134,9 +3133,11 @@ class SchedulerJobTest(unittest.TestCase):
         scheduler.create_dag_run(dag_half_pool)
 
         pool_slots_dag_half_pool = scheduler._get_pool_slots(dag_half_pool)
-        self.assertEquals(2, len(pool_slots_dag_no_pool))
-        self.assertEquals(non_pooled_task_slots, pool_slots_dag_no_pool[None])
-        self.assertEquals(1, pool_slots_dag_no_pool[TASKED_POOL])
+        self.assertEquals(2, len(pool_slots_dag_half_pool))
+        self.assertEquals(non_pooled_task_slots, pool_slots_dag_half_pool[None])
+        self.assertEquals(1, pool_slots_dag_half_pool[TASKED_POOL])
+
+        session.query(models.TaskInstance).delete()
 
         # Test than when only pools are used, only the pool is returned and not
         # the default configuration non_pooled_task_slot_count
@@ -3154,16 +3155,18 @@ class SchedulerJobTest(unittest.TestCase):
         scheduler.create_dag_run(dag_all_pool)
 
         pool_slots_dag_all_pool = scheduler._get_pool_slots(dag_all_pool)
-        self.assertEquals(1, pool_slots_dag_no_pool[TASKED_POOL])
-        self.assertEquals(1, len(pool_slots_dag_no_pool))
+        self.assertEquals(1, pool_slots_dag_all_pool[TASKED_POOL])
+        print(pool_slots_dag_all_pool)
+        self.assertEquals(1, len(pool_slots_dag_all_pool))
 
+        session.query(models.TaskInstance).delete()
 
         # Test that when no dag is specified, all the pool configurations are
         # returned including the default non_pooled_task_slot_count
         pool_slots_pool = scheduler._get_pool_slots()
-        self.assertEquals(non_pooled_task_slots, pool_slots_dag_no_pool[None])
-        self.assertEquals(1, pool_slots_dag_no_pool[TASKED_POOL])
-        self.assertEquals(2, pool_slots_dag_no_pool[UNTASKED_POOL])
-        self.assertEquals(3, len(pool_slots_dag_no_pool))
+        self.assertEquals(non_pooled_task_slots, pool_slots_pool[None])
+        self.assertEquals(1, pool_slots_pool[TASKED_POOL])
+        self.assertEquals(2, pool_slots_pool[UNTASKED_POOL])
+        self.assertEquals(3, len(pool_slots_pool))
         self.assertFalse(True)
 
