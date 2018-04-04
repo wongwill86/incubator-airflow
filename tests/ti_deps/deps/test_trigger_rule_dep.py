@@ -267,12 +267,12 @@ class TriggerRuleDepTest(unittest.TestCase):
         dag_id = 'TriggerRuleDepTest.test_upstream_ready'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
 
-        upstream_tasks =  []
+        upstream_tasks = []
         misc_tasks = []
         width = 50000
         with dag:
             end = DummyOperator(task_id='downstream_task')
-            for task_id in range(0,width):
+            for task_id in range(0, width):
                 upstream = DummyOperator(task_id='upstream_task_%s' % task_id,
                                          weight_rule=WeightRule.ABSOLUTE)
                 upstream.set_downstream(end)
@@ -282,51 +282,42 @@ class TriggerRuleDepTest(unittest.TestCase):
                 misc = DummyOperator(task_id='misc_task_%s' % task_id)
                 misc_tasks.append(misc)
 
-            session = settings.Session()
+        session = settings.Session()
 
-            dag.clear()
-            dr = dag.create_dagrun(run_id="test",
-                                   state=State.SUCCESS,
-                                   execution_date=DEFAULT_DATE,
-                                   start_date=DEFAULT_DATE,
-                                   session=session)
-            TI = airflow.models.TaskInstance
+        dag.clear()
+        dr = dag.create_dagrun(run_id="test",
+                               state=State.SUCCESS,
+                               execution_date=DEFAULT_DATE,
+                               start_date=DEFAULT_DATE,
+                               session=session)
+        TI = airflow.models.TaskInstance
 
-            print('create elapsed %s' % (datetime.datetime.now() - start))
-            for index in range(0, len(upstream_tasks)):
-                ti = TI(upstream_tasks[index], dr.execution_date)
-                next_state = State.NONE
-                if index < 100:
-                    next_state = State.SUCCESS
-                elif index < 201:
-                    next_state = State.SKIPPED
-                elif index < 303:
-                    next_state = State.FAILED
-                elif index < 406:
-                    next_state = State.UPSTREAM_FAILED
-                elif index < 510:
-                    next_state = State.UP_FOR_RETRY
-                elif index < 615:
-                    next_state = State.RUNNING
-                if next_state:
-                    ti.set_state(next_state, session)
+        print('create elapsed %s' % (datetime.datetime.now() - start))
+        for index in range(0, len(upstream_tasks)):
+            ti = TI(upstream_tasks[index], dr.execution_date)
+            next_state = State.NONE
+            if index < 100:
+                next_state = State.SUCCESS
+            elif index < 201:
+                next_state = State.SKIPPED
+            elif index < 303:
+                next_state = State.FAILED
+            elif index < 406:
+                next_state = State.UPSTREAM_FAILED
+            elif index < 510:
+                next_state = State.UP_FOR_RETRY
+            elif index < 615:
+                next_state = State.RUNNING
+            if next_state:
+                ti.set_state(next_state, session)
 
-            ti = dr.get_task_instance(task_id=end.task_id)
-            ti.task = end
+        ti = dr.get_task_instance(task_id=end.task_id)
+        ti.task = end
 
-            stats = TriggerRuleDep()._query_upstream_stats(ti, session)
+        stats = TriggerRuleDep()._query_upstream_stats(ti, session)
 
-            self.assertEqual(stats.successes, 100)
-            self.assertEqual(stats.skipped, 101)
-            self.assertEqual(stats.failed, 102)
-            self.assertEqual(stats.upstream_failed, 103)
-            self.assertEqual(stats.done, 100 + 101 + 102 + 103)
-            self.assertFalse(True)
-
-
-
-
-
-
-
-
+        self.assertEqual(stats.successes, 100)
+        self.assertEqual(stats.skipped, 101)
+        self.assertEqual(stats.failed, 102)
+        self.assertEqual(stats.upstream_failed, 103)
+        self.assertEqual(stats.done, 100 + 101 + 102 + 103)

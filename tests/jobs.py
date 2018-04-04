@@ -107,6 +107,7 @@ class BackfillJobTest(unittest.TestCase):
 
         scheduler = SchedulerJob()
         queue = mock.Mock()
+        queue.__len__ = mock.Mock(return_value=10)
         scheduler._process_task_instances(target_dag, queue=queue)
 
         self.assertTrue(queue.append.called)
@@ -2215,7 +2216,8 @@ class SchedulerJobTest(unittest.TestCase):
         self.assertIsNotNone(dr)
         queue = []
         scheduler._process_task_instances(dag, queue=queue)
-        self.assertEquals(len(queue), 2)
+        # only return one task because the pool only has 1 slot free
+        self.assertEquals(len(queue), 1)
         dagbag = self._make_simple_dag_bag([dag])
 
         # Recreated part of the scheduler here, to kick off tasks -> executor
