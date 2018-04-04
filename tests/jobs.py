@@ -1961,93 +1961,80 @@ class SchedulerJobTest(unittest.TestCase):
         tis = dr.get_task_instances()
         self.assertEquals(len(tis), 2)
 
-    def test_scheduler_limit_by_dag_concurrency(self):
-        """
-        Test to return only the number of tasks as the dag concurrency allows
-        """
+    def test_scheduler_limit_concurrency(self):
+        POOL = 'pool'
+        session = settings.Session()
+        session.add(Pool(pool=POOL, slots=2))
+
+        # Test to return only the number of tasks as the dag concurrency allows
         dag_concurrency = 2
-        dag = DAG(
-            dag_id='test_scheduler_limit_by_dag_concurrency',
+        dag_by_dag_concurrency_no_pool = DAG(
+            dag_id='test_scheduler_limit_by_dag_concurrency_no_pool',
             concurrency = dag_concurrency,
             start_date=DEFAULT_DATE)
 
-        with dag:
+        with dag_by_dag_concurrency_no_pool:
             DummyOperator(task_id='dummy_1', owner='airflow')
             DummyOperator(task_id='dummy_2', owner='airflow')
 
         scheduler = SchedulerJob()
-        dag.clear()
+        dag_by_dag_concurrency_no_pool.clear()
 
-        scheduler.create_dag_run(dag)
-        scheduler.create_dag_run(dag)
+        scheduler.create_dag_run(dag_by_dag_concurrency_no_pool, session=session)
+        scheduler.create_dag_run(dag_by_dag_concurrency_no_pool, session=session)
 
         queue = []
-        scheduler._process_task_instances(dag, queue=queue)
+        scheduler._process_task_instances(dag_by_dag_concurrency_no_pool, queue=queue, session=session)
 
-        self.assertEquals(dag_concurrency, len(queue))
+        # only two tasks are scheduled (first dag run only)
+        self.assertEquals(2, len(queue))
 
-    def test_scheduler_limit_by_pool_concurrency(self):
-        """
-        Test to return only the number of tasks as the pool concurrency allows despite
-        the dag_concurrency allowing more tasks
-        """
+        # Test to return only the number pool tasks as the dag concurrency allows
+        dag_concurrency = 1
+        dag_by_dag_concurrency = DAG(
+            dag_id='test_scheduler_limit_by_dag_concurrency',
+            concurrency=dag_concurrency,
+            start_date=DEFAULT_DATE)
+
+        with dag_by_dag_concurrency:
+            DummyOperator(task_id='dummy_1', pool=POOL, owner='airflow')
+            DummyOperator(task_id='dummy_2', pool=POOL, owner='airflow')
+
+        dag_by_dag_concurrency.clear()
+
+        scheduler.create_dag_run(dag_by_dag_concurrency)
+        scheduler.create_dag_run(dag_by_dag_concurrency)
+
+        queue = []
+        scheduler._process_task_instances(dag_by_dag_concurrency, queue=queue, session=session)
+
+        self.assertEquals(1, len(queue))
+
+        # Test to return only the number of tasks as the pool concurrency allows
         dag_concurrency = 10
-        dag = DAG(
-            dag_id='test_scheduler_limit_by_dag_concurrency',
-            concurrency=dag_concurrency,
+        dag_by_pool_concurrency = DAG(
+            dag_id='test_scheduler_limit_by_pool_concurrency',
+            concurrency = dag_concurrency,
             start_date=DEFAULT_DATE)
 
-        with dag:
-            DummyOperator(task_id='dummy_1', pool='pool', owner='airflow')
-            DummyOperator(task_id='dummy_2', owner='airflow')
+        with dag_by_pool_concurrency:
+            DummyOperator(task_id='dummy_pool_1', pool=POOL, owner='airflow')
+            DummyOperator(task_id='dummy_pool_2', pool=POOL, owner='airflow')
+            DummyOperator(task_id='dummy_no_pool', owner='airflow')
 
-        scheduler = SchedulerJob()
-        dag.clear()
+        dag_by_pool_concurrency.clear()
 
-        scheduler.create_dag_run(dag)
-        scheduler.create_dag_run(dag)
-
-        session = settings.Session()
-        session.add(Pool(pool='pool', slots=1))
-        session.commit()
+        scheduler.create_dag_run(dag_by_pool_concurrency, session=session)
+        scheduler.create_dag_run(dag_by_pool_concurrency, session=session)
 
         queue = []
-        scheduler._process_task_instances(dag, queue=queue)
+        scheduler._process_task_instances(dag_by_pool_concurrency, queue=queue, session=session)
 
-        self.assertEquals(3, len(queue))
-
-    def test_scheduler_limit_by_dag_and_pool_concurrency(self):
-        """
-        Test to return only the number concurrent tasks despite having more
-        open pool slots
-        """
-        dag_concurrency = 4
-        dag = DAG(
-            dag_id='test_scheduler_limit_by_dag_concurrency',
-            concurrency=dag_concurrency,
-            start_date=DEFAULT_DATE)
-
-        with dag:
-            DummyOperator(task_id='dummy_1', pool='pool', owner='airflow')
-            DummyOperator(task_id='dummy_2', pool='pool', owner='airflow')
-            DummyOperator(task_id='dummy_3', pool='pool', owner='airflow')
-            DummyOperator(task_id='dummy_4', pool='pool', owner='airflow')
-            DummyOperator(task_id='dummy_5', pool='pool', owner='airflow')
-
-        scheduler = SchedulerJob()
-        dag.clear()
-
-        scheduler.create_dag_run(dag)
-        scheduler.create_dag_run(dag)
-
-        session = settings.Session()
-        session.add(Pool(pool='pool', slots=100))
-        session.commit()
-
-        queue = []
-        scheduler._process_task_instances(dag, queue=queue)
-
+        # 2 pooled tasks and 2 non pool tasks should be scheduled
         self.assertEquals(4, len(queue))
+        self.assertEquals(2, sum([1 for key in queue if 'dummy_pool_' in key[1]]))
+        self.assertEquals(2, sum([1 for key in queue if key[1] == 'dummy_no_pool']))
+
 
     def test_scheduler_verify_max_active_runs(self):
         """
@@ -3084,9 +3071,9 @@ class SchedulerJobTest(unittest.TestCase):
 
         self.assertTrue(False)
 
-    def test_get_pool_slots(self):
+    def test_get_free_pool_slots_filtered(self):
         """
-        Test to make sure the pool slots are fetched correctly
+        Test that the correct pools are fetched correctly and filtered (by dag)
         """
         TASKED_POOL = 'tasked_pool'
         UNTASKED_POOL = 'untasked_pool'
@@ -3098,9 +3085,7 @@ class SchedulerJobTest(unittest.TestCase):
 
         # Test that when no pools are specified in the DAG, the default configuration
         # non_pooled_task_slot_count is returned
-        dag_no_pool = DAG(
-            dag_id='test_dag_no_pools',
-            start_date=DEFAULT_DATE)
+        dag_no_pool = DAG(dag_id='test_dag_no_pools', start_date=DEFAULT_DATE)
 
         with dag_no_pool:
             DummyOperator(task_id='dummy_no_pool', owner='airflow')
@@ -3110,18 +3095,14 @@ class SchedulerJobTest(unittest.TestCase):
 
         scheduler.create_dag_run(dag_no_pool)
 
-        pool_slots_dag_no_pool = scheduler._get_pool_slots(dag_no_pool)
+        pool_slots_dag_no_pool = scheduler._get_free_pool_slots(dag_no_pool)
         self.assertEquals(1, len(pool_slots_dag_no_pool))
         self.assertEquals(non_pooled_task_slots, pool_slots_dag_no_pool[None])
-
-        session.query(models.TaskInstance).delete()
 
         # Test than when both pools and no pools are specified, both the
         # default configuration non_pooled_task_slot_count is returned as well
         # as the configured slots set for the pool
-        dag_half_pool = DAG(
-            dag_id='test_dag_half_pools',
-            start_date=DEFAULT_DATE)
+        dag_half_pool = DAG(dag_id='test_dag_half_pools', start_date=DEFAULT_DATE)
 
         with dag_half_pool:
             DummyOperator(task_id='dummy_no_pool', owner='airflow')
@@ -3132,18 +3113,14 @@ class SchedulerJobTest(unittest.TestCase):
 
         scheduler.create_dag_run(dag_half_pool)
 
-        pool_slots_dag_half_pool = scheduler._get_pool_slots(dag_half_pool)
+        pool_slots_dag_half_pool = scheduler._get_free_pool_slots(dag_half_pool)
         self.assertEquals(2, len(pool_slots_dag_half_pool))
         self.assertEquals(non_pooled_task_slots, pool_slots_dag_half_pool[None])
         self.assertEquals(1, pool_slots_dag_half_pool[TASKED_POOL])
 
-        session.query(models.TaskInstance).delete()
-
         # Test than when only pools are used, only the pool is returned and not
         # the default configuration non_pooled_task_slot_count
-        dag_all_pool = DAG(
-            dag_id='test_dag_all_pools',
-            start_date=DEFAULT_DATE)
+        dag_all_pool = DAG(dag_id='test_dag_all_pools', start_date=DEFAULT_DATE)
 
         with dag_all_pool:
             DummyOperator(task_id='dummy_with_pool_1', pool=TASKED_POOL, owner='airflow')
@@ -3154,19 +3131,53 @@ class SchedulerJobTest(unittest.TestCase):
 
         scheduler.create_dag_run(dag_all_pool)
 
-        pool_slots_dag_all_pool = scheduler._get_pool_slots(dag_all_pool)
+        pool_slots_dag_all_pool = scheduler._get_free_pool_slots(dag_all_pool)
+        self.assertNotIn(None, pool_slots_dag_all_pool)
         self.assertEquals(1, pool_slots_dag_all_pool[TASKED_POOL])
-        print(pool_slots_dag_all_pool)
         self.assertEquals(1, len(pool_slots_dag_all_pool))
-
-        session.query(models.TaskInstance).delete()
 
         # Test that when no dag is specified, all the pool configurations are
         # returned including the default non_pooled_task_slot_count
-        pool_slots_pool = scheduler._get_pool_slots()
-        self.assertEquals(non_pooled_task_slots, pool_slots_pool[None])
-        self.assertEquals(1, pool_slots_pool[TASKED_POOL])
-        self.assertEquals(2, pool_slots_pool[UNTASKED_POOL])
-        self.assertEquals(3, len(pool_slots_pool))
-        self.assertFalse(True)
+        pool_slots_all = scheduler._get_free_pool_slots()
+        self.assertEquals(non_pooled_task_slots, pool_slots_all[None])
+        self.assertEquals(1, pool_slots_all[TASKED_POOL])
+        self.assertEquals(2, pool_slots_all[UNTASKED_POOL])
+        self.assertEquals(3, len(pool_slots_all))
 
+    def test_get_free_pool_slots_updated(self):
+        """
+        Test that the appropriate number of free pool slots are calculated correctly
+        """
+        FULL_POOL = 'full_pool'
+        EMPTY_POOL = 'empty_pooll'
+        HALF_POOL = 'half_pool'
+        session = settings.Session()
+        session.add(Pool(pool=FULL_POOL, slots=2))
+        session.add(Pool(pool=EMPTY_POOL, slots=2))
+        session.add(Pool(pool=HALF_POOL, slots=2))
+
+        dag_pool = DAG(dag_id='test_dag_pool', start_date=DEFAULT_DATE)
+
+        with dag_pool:
+            DummyOperator(task_id='dummy_full_pool_1', pool=FULL_POOL, owner='airflow')
+            DummyOperator(task_id='dummy_full_pool_2', pool=FULL_POOL, owner='airflow')
+            DummyOperator(task_id='dummy_half_pool', pool=HALF_POOL, owner='airflow')
+            DummyOperator(task_id='dummy_no_pool', owner='airflow')
+
+        scheduler = SchedulerJob()
+        dag_pool.clear()
+
+        run = scheduler.create_dag_run(dag_pool)
+
+        for ti in run.get_task_instances(session=session):
+            ti.set_state(State.QUEUED, session=session)
+            session.merge(ti)
+            session.commit()
+
+        pool_slots = scheduler._get_free_pool_slots(session=session)
+        self.assertNotIn(FULL_POOL, pool_slots)
+        self.assertEquals(3, len(pool_slots))
+        # Non pooled tasks is not affected by the pool size
+        self.assertEquals(configuration.getint('core', 'non_pooled_task_slot_count'), pool_slots[None])
+        self.assertEquals(1, pool_slots[HALF_POOL])
+        self.assertEquals(2, pool_slots[EMPTY_POOL])
