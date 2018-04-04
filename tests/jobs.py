@@ -862,6 +862,7 @@ class SchedulerJobTest(unittest.TestCase):
         session = settings.Session()
         session.query(models.DagRun).delete()
         session.query(models.ImportError).delete()
+        session.query(models.Pool).delete()
         session.commit()
 
     @staticmethod
