@@ -1979,6 +1979,7 @@ class SchedulerJobTest(unittest.TestCase):
             DummyOperator(task_id='dummy_1', owner='airflow')
             DummyOperator(task_id='dummy_2', owner='airflow')
 
+
         scheduler = SchedulerJob()
         dag_by_dag_concurrency_no_pool.clear()
 
@@ -2036,7 +2037,6 @@ class SchedulerJobTest(unittest.TestCase):
         self.assertEquals(4, len(queue))
         self.assertEquals(2, sum([1 for key in queue if 'dummy_pool_' in key[1]]))
         self.assertEquals(2, sum([1 for key in queue if key[1] == 'dummy_no_pool']))
-
 
     def test_scheduler_verify_max_active_runs(self):
         """
@@ -3052,7 +3052,7 @@ class SchedulerJobTest(unittest.TestCase):
 
     def test_load_big_dag(self):
         print('\n\n\nherehhrehrherhehre')
-        db = DagBag('/usr/people/ww12/src/air-tasks/dags/synaptor/', include_examples=False)
+        db = DagBag('/home/wwong/src/air-tasks/dags/synaptor/', include_examples=False)
         dag = db.get_dag('five_stage')
         dag.sync_to_db()
         print('number fo tasks is %s' % len(dag.task_dict))
@@ -3070,7 +3070,7 @@ class SchedulerJobTest(unittest.TestCase):
         )
 
         scheduler_job = SchedulerJob('five_stage', False)
-        result = scheduler_job.process_file('/usr/people/ww12/src/air-tasks/dags/synaptor/benchmark.py')
+        result = scheduler_job.process_file('/home/wwong/src/air-tasks/dags/synaptor/benchmark.py')
 
         self.assertTrue(False)
 

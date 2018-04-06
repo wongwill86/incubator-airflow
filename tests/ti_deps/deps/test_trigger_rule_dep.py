@@ -267,9 +267,11 @@ class TriggerRuleDepTest(unittest.TestCase):
         dag_id = 'TriggerRuleDepTest.test_upstream_ready'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
 
+        session = settings.Session()
+        __import__('pdb').set_trace()
         upstream_tasks = []
         misc_tasks = []
-        width = 50000
+        width = 50
         with dag:
             end = DummyOperator(task_id='downstream_task')
             for task_id in range(0, width):
@@ -282,7 +284,6 @@ class TriggerRuleDepTest(unittest.TestCase):
                 misc = DummyOperator(task_id='misc_task_%s' % task_id)
                 misc_tasks.append(misc)
 
-        session = settings.Session()
 
         dag.clear()
         dr = dag.create_dagrun(run_id="test",
@@ -313,11 +314,44 @@ class TriggerRuleDepTest(unittest.TestCase):
 
         ti = dr.get_task_instance(task_id=end.task_id)
         ti.task = end
+        import cProfile
+        import io
+        import pstats
+        import contextlib
 
-        stats = TriggerRuleDep()._query_upstream_stats(ti, session)
+        @contextlib.contextmanager
+        def profiled():
+            pr = cProfile.Profile()
+            pr.enable()
+            yield
+            pr.disable()
+            s = io.StringIO()
+            ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+            ps.print_stats()
+            # uncomment this to see who's calling what
+            # ps.print_callers()
+            print(s.getvalue())
+
+        start = datetime.datetime.now()
+        # with profiled():
+        for i in range(0, 10):
+            stats = TriggerRuleDep()._query_upstream_stats_old(ti, session)
+        print('trigger eval time old %s' % (datetime.datetime.now() - start))
+
+        start = datetime.datetime.now()
+        # with profiled():
+        for i in range(0, 10):
+            stats = TriggerRuleDep()._query_upstream_stats(ti, session)
+        print('trigger eval time new %s' % (datetime.datetime.now() - start))
+
+        # start = datetime.datetime.now()
+        # for i in range(0, 10):
+            # stats = TriggerRuleDep()._query_upstream_stats_raw_mysql(ti, session)
+        # print('trigger eval time raw %s' % (datetime.datetime.now() - start))
 
         self.assertEqual(stats.successes, 100)
         self.assertEqual(stats.skipped, 101)
         self.assertEqual(stats.failed, 102)
         self.assertEqual(stats.upstream_failed, 103)
         self.assertEqual(stats.done, 100 + 101 + 102 + 103)
+        self.assertTrue(False)

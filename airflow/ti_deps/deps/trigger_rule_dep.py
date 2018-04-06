@@ -18,6 +18,8 @@ from airflow.ti_deps.deps.base_ti_dep import BaseTIDep
 from airflow.utils.db import provide_session
 from airflow.utils.state import State
 from collections import namedtuple
+from sqlalchemy.dialects import mysql, postgresql, sqlite
+from sqlalchemy import sql
 
 SUCCESSES = 'successes'
 SKIPPED = 'skipped'
@@ -39,49 +41,22 @@ class TriggerRuleDep(BaseTIDep):
         TI = airflow.models.TaskInstance
         TR = airflow.models.TriggerRule
 
-        # TODO(unknown): this query becomes quite expensive with dags that have many
-        # tasks. It should be refactored to let the task report to the dag run and get the
-        # aggregates from there.
-        qry = (
-            session
-            .query(
-                func.coalesce(func.sum(
-                    case([(TI.state == State.SUCCESS, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.SKIPPED, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.FAILED, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)), 0),
-                func.count(TI.task_id),
-            )
-            .filter(
-                TI.dag_id == ti.dag_id,
-                TI.task_id.in_(ti.task.upstream_task_ids),
-                TI.execution_date == ti.execution_date,
-                TI.state.in_([
-                    State.SUCCESS, State.FAILED,
-                    State.UPSTREAM_FAILED, State.SKIPPED]),
-            )
-        )
-        successes, skipped, failed, upstream_failed, done = qry.first()
-        return UpstreamStats(successes, skipped, failed, upstream_failed, done)
-
-    def _query_upstream_stats_new(self, ti, session):
-        TI = airflow.models.TaskInstance
-        TR = airflow.models.TriggerRule
-
         qry = (
             session
             .query(TI.state, func.count(TI.state).label('count'))
             .filter(
                 TI.dag_id == ti.dag_id,
-                TI.task_id.in_(ti.task.upstream_task_ids),
+                # TI.task_id.in_(ti.task.upstream_task_ids),
+                #postgres only TI.task_id == func.any(list(ti.task.upstream_task_ids)),
+                # TI.task_id.in_([(id, ) for id in ti.task.upstream_task_ids]),
                 TI.execution_date == ti.execution_date,
                 TI.state.in_([
                     State.SUCCESS, State.FAILED,
                     State.UPSTREAM_FAILED, State.SKIPPED]),
             )
+            .filter(sql.text('task_id in (:task_ids)', {
+                'task_ids': ([(id, ) for id in ti.task.upstream_task_ids])
+            }))
             .group_by(TI.state)
         )
 
@@ -100,6 +75,76 @@ class TriggerRuleDep(BaseTIDep):
         done = successes + skipped + failed + upstream_failed
         return UpstreamStats(successes, skipped, failed, upstream_failed, done)
 
+    # mysql only
+    def _query_upstream_stats_raw_mysql(self, ti, session):
+        from sqlalchemy import sql
+        query = sql.text('''
+                         select count(state) as count, state from task_instance
+                            where dag_id = :dag_id and
+                       execution_date = :execution_date\
+                       and state in (:success, :failed, :upstream_failed, :skipped) and\
+                       task_id in :task_ids\
+                       group by state
+                         ''')
+        connection = session.connection()
+        result = connection.execute(query, {
+            'dag_id': ti.task.dag_id,
+            'execution_date': ti.execution_date,
+            'success': State.SUCCESS,
+            'failed': State.FAILED,
+            'upstream_failed': State.UPSTREAM_FAILED,
+            'skipped': State.SKIPPED,
+            'task_ids': ([(id, ) for id in ti.task.upstream_task_ids])
+        })
+
+        successes = skipped = failed = upstream_failed = done = 0
+
+        for row in result:
+            if row.state == State.SUCCESS:
+                successes = row.count
+            elif row.state == State.SKIPPED:
+                skipped = row.count
+            elif row.state == State.FAILED:
+                failed = row.count
+            elif row.state == State.UPSTREAM_FAILED:
+                upstream_failed = row.count
+
+        done = successes + skipped + failed + upstream_failed
+        return UpstreamStats(successes, skipped, failed, upstream_failed, done)
+
+    def _query_upstream_stats_old(self, ti, session):
+        TI = airflow.models.TaskInstance
+        TR = airflow.models.TriggerRule
+
+        # TODO(unknown): this query becomes quite expensive with dags that have many
+        # tasks. It should be refactored to let the task report to the dag run and get the
+        # aggregates from there.
+        qry = (
+            session
+            .query(
+                func.coalesce(func.sum(
+                    case([(TI.state == State.SUCCESS, 1)], else_=0)), 0),
+                func.coalesce(func.sum(
+                    case([(TI.state == State.SKIPPED, 1)], else_=0)), 0),
+                func.coalesce(func.sum(
+                    case([(TI.state == State.FAILED, 1)], else_=0)), 0),
+                func.coalesce(func.sum(
+                    case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)), 0),
+                func.count(TI.task_id),
+            )
+            .filter(
+                TI.dag_id == ti.dag_id,
+                # TI.task_id == func.any(list(ti.task.upstream_task_ids)),
+                TI.task_id.in_(ti.task.upstream_task_ids),
+                # TI.task_id.in_([(id, ) for id in ti.task.upstream_task_ids]),
+                TI.execution_date == ti.execution_date,
+                TI.state.in_([
+                    State.SUCCESS, State.FAILED,
+                    State.UPSTREAM_FAILED, State.SKIPPED]),
+            )
+        )
+        successes, skipped, failed, upstream_failed, done = qry.first()
+        return UpstreamStats(successes, skipped, failed, upstream_failed, done)
 
 
     @provide_session
@@ -117,9 +162,7 @@ class TriggerRuleDep(BaseTIDep):
             yield self._passing_status(reason="The task had a dummy trigger rule set.")
             return
 
-        # stats = self._query_upstream_stats(ti, session)
-        stats = self._query_upstream_stats_new(ti, session)
-        # stats = UpstreamStats(0, 0, 0, 0, 0)
+        stats = self._query_upstream_stats_raw(ti, session)
 
         for dep_status in self._evaluate_trigger_rule(
                 ti=ti,
