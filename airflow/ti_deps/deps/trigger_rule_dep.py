@@ -20,6 +20,9 @@ from airflow.utils.state import State
 from collections import namedtuple
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy import sql
+from sqlalchemy.sql import expression
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.expression import ClauseElement
 
 SUCCESSES = 'successes'
 SKIPPED = 'skipped'
@@ -27,6 +30,23 @@ FAILED = 'failed'
 UPSTREAM_FAILED = 'upstream_failed'
 DONE = 'done'
 UpstreamStats = namedtuple('UpstreamStats', [SUCCESSES, SKIPPED, FAILED, UPSTREAM_FAILED, DONE])
+
+
+class TasksIn(expression.FunctionElement):
+    name = 'TasksIn'
+    # def __init__(self, column):
+    #     self.column = column
+
+@compiles(TasksIn)
+def compile(element, compiler, **kwargs):
+    # __import__('pdb').set_trace()
+    column, values = element.clauses
+    ret = "%s = any(%s)" % (column, compiler.process(values))
+    # values = element.clauses
+    # ret = "task_id = any(%s)" % values
+    print(ret)
+    return ret
+
 
 class TriggerRuleDep(BaseTIDep):
     """
@@ -44,21 +64,33 @@ class TriggerRuleDep(BaseTIDep):
         qry = (
             session
             .query(TI.state, func.count(TI.state).label('count'))
+        )
+        blah = [(id, ) for id in ti.task.upstream_task_ids]
+        array = list(ti.task.upstream_task_ids)
+        array.append('\'); drop table task_instance; commit;')
+        # __import__('pdb').set_trace()
+        qry = (
+            qry
             .filter(
-                TI.dag_id == ti.dag_id,
+                # TI.dag_id == ti.dag_id,
                 # TI.task_id.in_(ti.task.upstream_task_ids),
-                #postgres only TI.task_id == func.any(list(ti.task.upstream_task_ids)),
-                # TI.task_id.in_([(id, ) for id in ti.task.upstream_task_ids]),
-                TI.execution_date == ti.execution_date,
-                TI.state.in_([
-                    State.SUCCESS, State.FAILED,
-                    State.UPSTREAM_FAILED, State.SKIPPED]),
+                #postgres only
+                TasksIn(TI.task_id, array)
+                # TasksIn(array)
+                # TI.task_id == func.any(list(ti.task.upstream_task_ids)),
+                # TI.task_id.in_(blah),
+                # TI.execution_date == ti.execution_date,
+                # TI.state.in_([
+                    # State.SUCCESS, State.FAILED,
+                    # State.UPSTREAM_FAILED, State.SKIPPED]),
             )
-            .filter(sql.text('task_id in (:task_ids)', {
-                'task_ids': ([(id, ) for id in ti.task.upstream_task_ids])
-            }))
+            # .filter(sql.text('task_id in (:task_ids)', {
+            #     'task_ids': ([(id, ) for id in ti.task.upstream_task_ids])
+            # }))
+            .filter(TI.dag_id == ti.dag_id)
             .group_by(TI.state)
         )
+        print(qry)
 
         successes = skipped = failed = upstream_failed = done = 0
 
@@ -71,6 +103,7 @@ class TriggerRuleDep(BaseTIDep):
                 failed = row.count
             elif row.state == State.UPSTREAM_FAILED:
                 upstream_failed = row.count
+
 
         done = successes + skipped + failed + upstream_failed
         return UpstreamStats(successes, skipped, failed, upstream_failed, done)

@@ -268,10 +268,9 @@ class TriggerRuleDepTest(unittest.TestCase):
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
 
         session = settings.Session()
-        __import__('pdb').set_trace()
         upstream_tasks = []
         misc_tasks = []
-        width = 50
+        width = 500
         with dag:
             end = DummyOperator(task_id='downstream_task')
             for task_id in range(0, width):
@@ -344,10 +343,10 @@ class TriggerRuleDepTest(unittest.TestCase):
             stats = TriggerRuleDep()._query_upstream_stats(ti, session)
         print('trigger eval time new %s' % (datetime.datetime.now() - start))
 
-        # start = datetime.datetime.now()
-        # for i in range(0, 10):
-            # stats = TriggerRuleDep()._query_upstream_stats_raw_mysql(ti, session)
-        # print('trigger eval time raw %s' % (datetime.datetime.now() - start))
+        start = datetime.datetime.now()
+        for i in range(0, 10):
+            stats = TriggerRuleDep()._query_upstream_stats_raw_mysql(ti, session)
+        print('trigger eval time raw %s' % (datetime.datetime.now() - start))
 
         self.assertEqual(stats.successes, 100)
         self.assertEqual(stats.skipped, 101)
