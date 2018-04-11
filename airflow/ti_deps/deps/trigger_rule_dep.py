@@ -120,7 +120,7 @@ class TriggerRuleDep(BaseTIDep):
             yield self._passing_status(reason="The task had a dummy trigger rule set.")
             return
 
-        stats = self._query_upstream_stats_raw(ti, session)
+        stats = self._query_upstream_stats(ti, session)
 
         for dep_status in self._evaluate_trigger_rule(
                 ti=ti,

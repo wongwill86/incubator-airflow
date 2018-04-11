@@ -1134,8 +1134,6 @@ class SchedulerJob(BaseJob):
         else:
             ti_query = ti_query.filter(TI.state.in_(states))
 
-        print('execution query is %s' % ti_query)
-
         task_instances_to_examine = ti_query.all()
 
         if len(task_instances_to_examine) == 0:
@@ -1804,9 +1802,6 @@ class SchedulerJob(BaseJob):
         :return: a list of SimpleDags made from the Dags found in the file
         :rtype: list[SimpleDag]
         """
-        import cProfile
-        pr = cProfile.Profile()
-        pr.enable()
         self.log.info("Processing file %s for tasks to queue", file_path)
         # As DAGs are parsed from this file, they will be converted into SimpleDags
         simple_dags = []
@@ -1859,8 +1854,6 @@ class SchedulerJob(BaseJob):
 
         self._process_dags(dagbag, dags, ti_keys_to_schedule)
 
-        print('Process_file() calling are_deps met for %s' % len(ti_keys_to_schedule))
-        start_time = datetime.now()
         for ti_key in ti_keys_to_schedule:
             dag = dagbag.dags[ti_key[0]]
             task = dag.get_task(ti_key[1])
@@ -1889,7 +1882,6 @@ class SchedulerJob(BaseJob):
             self.log.info("Creating / updating %s in ORM", ti)
             session.merge(ti)
         # commit batch
-        print('process_file are deps met %s' % (datetime.now() - start_time))
         session.commit()
 
         # Record import errors into the ORM
@@ -1902,15 +1894,11 @@ class SchedulerJob(BaseJob):
         except Exception:
             self.log.exception("Error killing zombies!")
 
-        pr.disable()
-        # if elapsed > 1:
-        pr.dump_stats(file_path + str(os.getpid()) + 'single.cprof')
         return simple_dags
 
     @provide_session
     def heartbeat_callback(self, session=None):
         Stats.gauge('scheduler_heartbeat', 1, 1)
-
 
 
 class BackfillJob(BaseJob):
