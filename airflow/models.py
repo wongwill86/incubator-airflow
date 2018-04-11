@@ -4844,15 +4844,30 @@ class DagRun(Base, LoggingMixin):
                 if self.state is not State.RUNNING and not dag.partial:
                     ti.state = State.REMOVED
 
+        new_tasks = []
         # check for missing tasks
         for task in six.itervalues(dag.task_dict):
             if task.adhoc:
                 continue
 
             if task.task_id not in task_ids:
-                ti = TaskInstance(task, self.execution_date)
-                session.add(ti)
+                # ti = TaskInstance(task, self.execution_date)
+                ti = dict(
+                    task_id=task.task_id,
+                    dag_id=task.dag_id,
+                    execution_date=self.execution_date,
+                    pool=task.pool,
+                    queue=task.queue,
+                    try_number=0,
+                    max_tries=task.retries,
+                    hostname='',
+                    unixname=Column(String(1000)),
+                    priority_weight=task.priority_weight_total
+                )
+                new_tasks.append(ti)
 
+        session.bulk_insert_mappings(TaskInstance, new_tasks)
+        # session.bulk_save_objects(new_tasks)
         session.commit()
 
     @staticmethod
