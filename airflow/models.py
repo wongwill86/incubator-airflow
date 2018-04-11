@@ -4836,6 +4836,7 @@ class DagRun(Base, LoggingMixin):
 
         # check for removed tasks
         task_ids = set()
+        max_tis_per_query = configuration.getint('scheduler', 'max_tis_per_query')
         for ti in tis:
             task_ids.add(ti.task_id)
             try:
@@ -4851,23 +4852,13 @@ class DagRun(Base, LoggingMixin):
                 continue
 
             if task.task_id not in task_ids:
-                # ti = TaskInstance(task, self.execution_date)
-                ti = dict(
-                    task_id=task.task_id,
-                    dag_id=task.dag_id,
-                    execution_date=self.execution_date,
-                    pool=task.pool,
-                    queue=task.queue,
-                    try_number=0,
-                    max_tries=task.retries,
-                    hostname='',
-                    unixname=Column(String(1000)),
-                    priority_weight=task.priority_weight_total
-                )
+                ti = TaskInstance(task, self.execution_date)
                 new_tasks.append(ti)
+                if len(new_tasks) == max_tis_per_query:
+                    session.bulk_save_objects(new_tasks)
+                    new_tasks = []
 
-        session.bulk_insert_mappings(TaskInstance, new_tasks)
-        # session.bulk_save_objects(new_tasks)
+        session.bulk_save_objects(new_tasks)
         session.commit()
 
     @staticmethod

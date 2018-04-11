@@ -19,7 +19,7 @@ import math
 import airflow
 from airflow import settings
 from airflow.operators.dummy_operator import DummyOperator
-from airflow.models import BaseOperator, TaskInstance, DAG
+from airflow.models import BaseOperator, DagModel, DagRun, TaskInstance, DAG
 from airflow.utils.trigger_rule import TriggerRule
 from airflow.ti_deps.dep_context import DepContext
 from airflow.ti_deps.deps.trigger_rule_dep import TriggerRuleDep
@@ -29,6 +29,12 @@ from airflow.utils.weight_rule import WeightRule
 DEFAULT_DATE = datetime(2016, 1, 1)
 
 class TriggerRuleDepTest(unittest.TestCase):
+    def setUp(self):
+        session = settings.Session()
+        session.query(DagModel).delete()
+        session.query(DagRun).delete()
+        session.query(TaskInstance).delete()
+        session.commit()
 
     def _get_task_instance(self, trigger_rule=TriggerRule.ALL_SUCCESS,
                            state=None, upstream_task_ids=None):
@@ -262,7 +268,6 @@ class TriggerRuleDepTest(unittest.TestCase):
         """
         Test returns that all upstream are ready to be processed
         """
-        start = datetime.now()
         dag_id = 'TriggerRuleDepTest.test_upstream_ready'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
         # extra dag to make sure we're selecting from the correct dag tasks
@@ -339,24 +344,3 @@ class TriggerRuleDepTest(unittest.TestCase):
         self.assertEqual(stats.failed, 102)
         self.assertEqual(stats.upstream_failed, 103)
         self.assertEqual(stats.done, 100 + 101 + 102 + 103)
-
-
-
-        import cProfile
-        import io
-        import pstats
-        import contextlib
-        @contextlib.contextmanager
-        def profiled():
-            pr = cProfile.Profile()
-            pr.enable()
-            yield
-            pr.disable()
-            s = io.StringIO()
-            ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
-            ps.print_stats()
-            # uncomment this to see who's calling what
-            # ps.print_callers()
-            print(s.getvalue())
-
-
