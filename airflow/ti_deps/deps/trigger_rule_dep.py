@@ -31,22 +31,36 @@ UPSTREAM_FAILED = 'upstream_failed'
 DONE = 'done'
 UpstreamStats = namedtuple('UpstreamStats', [SUCCESSES, SKIPPED, FAILED, UPSTREAM_FAILED, DONE])
 
+class CustomIn(expression.FunctionElement):
+    name = 'CustomIn'
+    pass
 
-class TasksIn(expression.FunctionElement):
-    name = 'TasksIn'
-    # def __init__(self, column):
-    #     self.column = column
-
-@compiles(TasksIn)
+@compiles(CustomIn, 'postgresql')
 def compile(element, compiler, **kwargs):
-    # __import__('pdb').set_trace()
+    """
+    For postgres use the any function which performs much faster
+    """
     column, values = element.clauses
-    ret = "%s = any(%s)" % (column, compiler.process(values))
-    # values = element.clauses
-    # ret = "task_id = any(%s)" % values
-    print(ret)
+    values.value = list(values.value)
+    return "%s = any(%s)" % (column, compiler.process(values))
+
+@compiles(CustomIn, 'mysql')
+def compile(element, compiler, **kwargs):
+    """
+    For mysql, we can pass in the bindparams directly
+    """
+    column, values = element.clauses
+    values.value = ([(val, ) for val in values.value])
+    ret = "%s in %s" % (column, compiler.process(values))
     return ret
 
+@compiles(CustomIn)
+def compile(element, compiler, **kwargs):
+    """
+    Default to regular in_ behavior
+    """
+    column, values = element.clauses
+    return compiler.visit_binary(column.in_(values.value))
 
 class TriggerRuleDep(BaseTIDep):
     """
@@ -58,94 +72,6 @@ class TriggerRuleDep(BaseTIDep):
     IS_TASK_DEP = True
 
     def _query_upstream_stats(self, ti, session):
-        TI = airflow.models.TaskInstance
-        TR = airflow.models.TriggerRule
-
-        qry = (
-            session
-            .query(TI.state, func.count(TI.state).label('count'))
-        )
-        blah = [(id, ) for id in ti.task.upstream_task_ids]
-        array = list(ti.task.upstream_task_ids)
-        array.append('\'); drop table task_instance; commit;')
-        # __import__('pdb').set_trace()
-        qry = (
-            qry
-            .filter(
-                # TI.dag_id == ti.dag_id,
-                # TI.task_id.in_(ti.task.upstream_task_ids),
-                #postgres only
-                TasksIn(TI.task_id, array)
-                # TasksIn(array)
-                # TI.task_id == func.any(list(ti.task.upstream_task_ids)),
-                # TI.task_id.in_(blah),
-                # TI.execution_date == ti.execution_date,
-                # TI.state.in_([
-                    # State.SUCCESS, State.FAILED,
-                    # State.UPSTREAM_FAILED, State.SKIPPED]),
-            )
-            # .filter(sql.text('task_id in (:task_ids)', {
-            #     'task_ids': ([(id, ) for id in ti.task.upstream_task_ids])
-            # }))
-            .filter(TI.dag_id == ti.dag_id)
-            .group_by(TI.state)
-        )
-        print(qry)
-
-        successes = skipped = failed = upstream_failed = done = 0
-
-        for row in qry.all():
-            if row.state == State.SUCCESS:
-                successes = row.count
-            elif row.state == State.SKIPPED:
-                skipped = row.count
-            elif row.state == State.FAILED:
-                failed = row.count
-            elif row.state == State.UPSTREAM_FAILED:
-                upstream_failed = row.count
-
-
-        done = successes + skipped + failed + upstream_failed
-        return UpstreamStats(successes, skipped, failed, upstream_failed, done)
-
-    # mysql only
-    def _query_upstream_stats_raw_mysql(self, ti, session):
-        from sqlalchemy import sql
-        query = sql.text('''
-                         select count(state) as count, state from task_instance
-                            where dag_id = :dag_id and
-                       execution_date = :execution_date\
-                       and state in (:success, :failed, :upstream_failed, :skipped) and\
-                       task_id in :task_ids\
-                       group by state
-                         ''')
-        connection = session.connection()
-        result = connection.execute(query, {
-            'dag_id': ti.task.dag_id,
-            'execution_date': ti.execution_date,
-            'success': State.SUCCESS,
-            'failed': State.FAILED,
-            'upstream_failed': State.UPSTREAM_FAILED,
-            'skipped': State.SKIPPED,
-            'task_ids': ([(id, ) for id in ti.task.upstream_task_ids])
-        })
-
-        successes = skipped = failed = upstream_failed = done = 0
-
-        for row in result:
-            if row.state == State.SUCCESS:
-                successes = row.count
-            elif row.state == State.SKIPPED:
-                skipped = row.count
-            elif row.state == State.FAILED:
-                failed = row.count
-            elif row.state == State.UPSTREAM_FAILED:
-                upstream_failed = row.count
-
-        done = successes + skipped + failed + upstream_failed
-        return UpstreamStats(successes, skipped, failed, upstream_failed, done)
-
-    def _query_upstream_stats_old(self, ti, session):
         TI = airflow.models.TaskInstance
         TR = airflow.models.TriggerRule
 
@@ -167,18 +93,17 @@ class TriggerRuleDep(BaseTIDep):
             )
             .filter(
                 TI.dag_id == ti.dag_id,
-                # TI.task_id == func.any(list(ti.task.upstream_task_ids)),
-                TI.task_id.in_(ti.task.upstream_task_ids),
-                # TI.task_id.in_([(id, ) for id in ti.task.upstream_task_ids]),
+                CustomIn(TI.task_id, ti.task.upstream_task_ids),
                 TI.execution_date == ti.execution_date,
-                TI.state.in_([
+                CustomIn(TI.state, [
                     State.SUCCESS, State.FAILED,
-                    State.UPSTREAM_FAILED, State.SKIPPED]),
+                    State.UPSTREAM_FAILED, State.SKIPPED
+                ])
             )
         )
+
         successes, skipped, failed, upstream_failed, done = qry.first()
         return UpstreamStats(successes, skipped, failed, upstream_failed, done)
-
 
     @provide_session
     def _get_dep_statuses(self, ti, session, dep_context):

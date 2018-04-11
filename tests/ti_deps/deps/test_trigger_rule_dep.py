@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import math
 import airflow
@@ -262,39 +262,51 @@ class TriggerRuleDepTest(unittest.TestCase):
         """
         Test returns that all upstream are ready to be processed
         """
-        import datetime
-        start = datetime.datetime.now()
+        start = datetime.now()
         dag_id = 'TriggerRuleDepTest.test_upstream_ready'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
+        # extra dag to make sure we're selecting from the correct dag tasks
+        misc_dag = DAG(dag_id='misc_dag', start_date=DEFAULT_DATE)
 
         session = settings.Session()
         upstream_tasks = []
         misc_tasks = []
-        width = 500
+        upstream_parents = 2000
         with dag:
             end = DummyOperator(task_id='downstream_task')
-            for task_id in range(0, width):
+            for task_id in range(0, upstream_parents):
                 upstream = DummyOperator(task_id='upstream_task_%s' % task_id,
                                          weight_rule=WeightRule.ABSOLUTE)
                 upstream.set_downstream(end)
                 upstream_tasks.append(upstream)
 
-            for task_id in range(0, 2 * width):
-                misc = DummyOperator(task_id='misc_task_%s' % task_id)
-                misc_tasks.append(misc)
+            # tasks added to ensure that we are selecting the correct task ids
+            for task_id in range(0, 2 * upstream_parents):
+                misc_tasks.append(DummyOperator(task_id='misc_task_%s' % task_id))
+                misc_tasks.append(DummyOperator(task_id='misc_dag_misc_task_%s' % task_id, dag=misc_dag))
 
 
         dag.clear()
-        dr = dag.create_dagrun(run_id="test",
+        dagrun = dag.create_dagrun(run_id="test",
+                               state=State.SUCCESS,
+                               execution_date=DEFAULT_DATE,
+                               start_date=DEFAULT_DATE,
+                               session=session)
+
+        # extra dag run to make sure we're selecting the first dagrun only
+        dagrun_other = dag.create_dagrun(run_id="test_other",
+                               state=State.SUCCESS,
+                               execution_date=DEFAULT_DATE + timedelta(hours=1),
+                               start_date=DEFAULT_DATE,
+                               session=session)
+        misc_dagrun = misc_dag.create_dagrun(run_id="misc_test",
                                state=State.SUCCESS,
                                execution_date=DEFAULT_DATE,
                                start_date=DEFAULT_DATE,
                                session=session)
         TI = airflow.models.TaskInstance
 
-        print('create elapsed %s' % (datetime.datetime.now() - start))
-        for index in range(0, len(upstream_tasks)):
-            ti = TI(upstream_tasks[index], dr.execution_date)
+        for index in range(0, int(len(upstream_tasks)/2)):
             next_state = State.NONE
             if index < 100:
                 next_state = State.SUCCESS
@@ -308,16 +320,32 @@ class TriggerRuleDepTest(unittest.TestCase):
                 next_state = State.UP_FOR_RETRY
             elif index < 615:
                 next_state = State.RUNNING
-            if next_state:
-                ti.set_state(next_state, session)
 
-        ti = dr.get_task_instance(task_id=end.task_id)
-        ti.task = end
+            if next_state:
+                task_instance = TI(upstream_tasks[index], dagrun.execution_date)
+                task_instance.set_state(next_state, session)
+                task_instance_other = TI(upstream_tasks[index], dagrun_other.execution_date)
+                task_instance_other.set_state(next_state, session)
+
+            misc_dag_task_instance = TI(misc_tasks[index*2], dagrun.execution_date)
+
+        end_task_instance = dagrun.get_task_instance(task_id=end.task_id)
+        end_task_instance.task = end
+
+        stats = TriggerRuleDep()._query_upstream_stats(end_task_instance, session)
+
+        self.assertEqual(stats.successes, 100)
+        self.assertEqual(stats.skipped, 101)
+        self.assertEqual(stats.failed, 102)
+        self.assertEqual(stats.upstream_failed, 103)
+        self.assertEqual(stats.done, 100 + 101 + 102 + 103)
+
+
+
         import cProfile
         import io
         import pstats
         import contextlib
-
         @contextlib.contextmanager
         def profiled():
             pr = cProfile.Profile()
@@ -331,26 +359,4 @@ class TriggerRuleDepTest(unittest.TestCase):
             # ps.print_callers()
             print(s.getvalue())
 
-        start = datetime.datetime.now()
-        # with profiled():
-        for i in range(0, 10):
-            stats = TriggerRuleDep()._query_upstream_stats_old(ti, session)
-        print('trigger eval time old %s' % (datetime.datetime.now() - start))
 
-        start = datetime.datetime.now()
-        # with profiled():
-        for i in range(0, 10):
-            stats = TriggerRuleDep()._query_upstream_stats(ti, session)
-        print('trigger eval time new %s' % (datetime.datetime.now() - start))
-
-        start = datetime.datetime.now()
-        for i in range(0, 10):
-            stats = TriggerRuleDep()._query_upstream_stats_raw_mysql(ti, session)
-        print('trigger eval time raw %s' % (datetime.datetime.now() - start))
-
-        self.assertEqual(stats.successes, 100)
-        self.assertEqual(stats.skipped, 101)
-        self.assertEqual(stats.failed, 102)
-        self.assertEqual(stats.upstream_failed, 103)
-        self.assertEqual(stats.done, 100 + 101 + 102 + 103)
-        self.assertTrue(False)
