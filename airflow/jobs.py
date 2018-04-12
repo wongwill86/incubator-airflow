@@ -933,6 +933,9 @@ class SchedulerJob(BaseJob):
         # update the state of the previously active dag runs
         dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session)
         active_dag_runs = []
+
+        task_keys_not_ready = set()
+
         for run in dag_runs:
             self.log.info("Examining DAG run %s", run)
             # don't consider runs that are executed in the future
@@ -956,7 +959,8 @@ class SchedulerJob(BaseJob):
 
             # todo: preferably the integrity check happens at dag collection time
             run.verify_integrity(session=session)
-            run.update_state(session=session)
+
+            run.update_state(session=session, task_keys_not_ready=task_keys_not_ready)
             if run.state == State.RUNNING:
                 make_transient(run)
                 active_dag_runs.append(run)
@@ -969,11 +973,11 @@ class SchedulerJob(BaseJob):
             # this needs a fresh session sometimes tis get detached
             tis = run.get_task_instances(state=(State.NONE, State.UP_FOR_RETRY))
 
-            # this loop is quite slow as it uses are_dependencies_met for
-            # every task (in ti.is_runnable). This is also called in
-            # update_state above which has already checked these tasks
+            # this loop is quite slow as it uses are_dependencies_met for every task
+            # (in ti.is_runnable).
             for ti in tis:
-                task = dag.get_task(ti.task_id)
+                if ti.key in task_keys_not_ready:
+                    continue
 
                 if ti.pool not in pool_to_slots_free or not pool_to_slots_free[ti.pool]:
                     continue
