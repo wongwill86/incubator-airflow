@@ -4774,14 +4774,17 @@ class DagRun(Base, LoggingMixin):
         tis = self.get_task_instances(session=session)
 
         # check for removed tasks
-        task_ids = []
+        task_ids = set()
         for ti in tis:
-            task_ids.append(ti.task_id)
+            task_ids.add(ti.task_id)
             try:
                 dag.get_task(ti.task_id)
             except AirflowException:
                 if self.state is not State.RUNNING and not dag.partial:
                     ti.state = State.REMOVED
+
+        new_tasks = []
+        max_tis_per_query = configuration.getint('scheduler', 'max_tis_per_query')
 
         # check for missing tasks
         for task in six.itervalues(dag.task_dict):
@@ -4790,8 +4793,13 @@ class DagRun(Base, LoggingMixin):
 
             if task.task_id not in task_ids:
                 ti = TaskInstance(task, self.execution_date)
-                session.add(ti)
+                new_tasks.append(ti)
+                if len(new_tasks) == max_tis_per_query:
+                    session.bulk_save_objects(new_tasks)
+                    session.commit()
+                    new_tasks = []
 
+        session.bulk_save_objects(new_tasks)
         session.commit()
 
     @staticmethod
