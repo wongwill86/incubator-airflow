@@ -765,6 +765,73 @@ class DagRunTest(unittest.TestCase):
         self.assertEqual(dr.state, State.RUNNING)
         self.assertEqual(dr2.state, State.RUNNING)
 
+    def test_dagrun_update_tasks_not_ready(self):
+        """
+        Test to make sure that update_state modifies the input parameter
+        task_keys_not_ready to include key of tasks not ready to be run.
+        In this case there is only one task that isn't ready and it is
+        guaranteed to be returned in a deadlock situation
+
+        """
+        session = settings.Session()
+        dag = DAG(
+            'text_dagrun_update_tasks_not_ready',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op2.trigger_rule = TriggerRule.ONE_FAILED
+            op2.set_upstream(op1)
+
+        dag.clear()
+        now = datetime.datetime.now()
+        dr = dag.create_dagrun(run_id='test_dagrun_deadlock',
+                               state=State.RUNNING,
+                               execution_date=now,
+                               start_date=now)
+
+        ti_op1 = dr.get_task_instance(task_id=op1.task_id)
+        ti_op1.set_state(state=State.SUCCESS, session=session)
+        ti_op2 = dr.get_task_instance(task_id=op2.task_id)
+        ti_op2.set_state(state=State.NONE, session=session)
+
+        task_keys_not_ready = set()
+        dr.update_state(task_keys_not_ready=task_keys_not_ready)
+        self.assertIn(ti_op2.key, task_keys_not_ready)
+
+    def test_get_task_instances_ordered(self):
+        """
+        Test to make sure get_task instances are returned in priority_weight
+        descending order
+        """
+
+        session = settings.Session()
+
+        dag = DAG(
+            'test_dagrun_get_task_instances_ordered',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        with dag:
+            for i in range(1,5):
+                DummyOperator(task_id='task_%s' % i,
+                              weight_rule=WeightRule.ABSOLUTE,
+                              priority_weight=i)
+        dag.clear()
+
+        now = datetime.datetime.now()
+        dr = dag.create_dagrun(run_id='test_dagrun_get_task_instances_ordered',
+                               state=State.RUNNING,
+                               execution_date=now,
+                               start_date=now)
+
+        tis = dr.get_task_instances(state=(State.NONE, State.UP_FOR_RETRY))
+        self.assertEqual(4, len(tis))
+        for i in range(1, 5):
+            self.assertEqual(tis[i - 1].priority_weight, 5 - i)
+
     def test_get_task_instance_on_empty_dagrun(self):
         """
         Make sure that a proper value is returned when a dagrun has no task instances

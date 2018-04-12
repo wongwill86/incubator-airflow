@@ -50,7 +50,7 @@ from urllib.parse import urlparse
 from sqlalchemy import (
     Column, Integer, String, DateTime, Text, Boolean, ForeignKey, PickleType,
     Index, Float, LargeBinary)
-from sqlalchemy import func, or_, and_
+from sqlalchemy import func, or_, and_, desc
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import reconstructor, relationship, synonym
@@ -3388,7 +3388,7 @@ class DAG(BaseDag, LoggingMixin):
 
     @property
     def roots(self):
-        return [t for t in self.tasks if not t.downstream_list]
+        return [t for t in self.task_dict.values() if not t.downstream_task_ids]
 
     def topological_sort(self):
         """
@@ -4595,7 +4595,7 @@ class DagRun(Base, LoggingMixin):
     @provide_session
     def get_task_instances(self, state=None, session=None):
         """
-        Returns the task instances for this dag run
+        Returns the task instances for this dag run ordered by priority_weight
         """
         TI = TaskInstance
         tis = session.query(TI).filter(
@@ -4617,6 +4617,8 @@ class DagRun(Base, LoggingMixin):
 
         if self.dag and self.dag.partial:
             tis = tis.filter(TI.task_id.in_(self.dag.task_ids))
+
+        tis = tis.order_by(desc(TI.priority_weight))
 
         return tis.all()
 
@@ -4724,7 +4726,7 @@ class DagRun(Base, LoggingMixin):
 
         # future: remove the check on adhoc tasks (=active_tasks)
         if len(tis) == len(dag.active_tasks):
-            root_ids = [t.task_id for t in dag.roots]
+            root_ids = {t.task_id for t in dag.roots}
             roots = [t for t in tis if t.task_id in root_ids]
 
             # if all roots finished and at least on failed, the run failed
