@@ -35,6 +35,7 @@ from airflow.models import State as ST
 from airflow.models import DagModel, DagStat
 from airflow.models import clear_task_instances
 from airflow.models import XCom
+from airflow import configuration
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.bash_operator import BashOperator
 from airflow.operators.python_operator import PythonOperator
@@ -887,6 +888,41 @@ class DagRunTest(unittest.TestCase):
         dagrun2 = self.create_dag_run(dag, execution_date=DEFAULT_DATE + datetime.timedelta(days=1))
         self.assertTrue(dagrun.is_backfill)
         self.assertFalse(dagrun2.is_backfill)
+
+    def test_create_dagrun_insert_task_instance_time_limit(self):
+        """
+        Test to make sure get_task instances are returned in priority_weight
+        descending order
+        """
+
+        session = settings.Session()
+        original_time_limit = configuration.get('scheduler',
+                                          'verify_integrity_insert_time_limit')
+        try:
+            configuration.set('scheduler', 'verify_integrity_insert_time_limit', '0')
+            dag = DAG(
+                'test_dagrun_',
+                start_date=DEFAULT_DATE,
+                default_args={'owner': 'owner1'})
+
+            with dag:
+                for i in range(1,5):
+                    DummyOperator(task_id='task_%s' % i,
+                                weight_rule=WeightRule.ABSOLUTE,
+                                priority_weight=i)
+            dag.clear()
+
+            now = datetime.datetime.now()
+            dr = dag.create_dagrun(run_id='test_dagrun_get_task_instances_ordered',
+                                state=State.RUNNING,
+                                execution_date=now,
+                                start_date=now)
+
+            tis = dr.get_task_instances(state=(State.NONE, State.UP_FOR_RETRY))
+            self.assertEqual(0, len(tis))
+        finally:
+            configuration.set('scheduler', 'verify_integrity_insert_time_limit',
+                              original_time_limit)
 
 class DagBagTest(unittest.TestCase):
 

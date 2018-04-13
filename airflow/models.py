@@ -4783,11 +4783,20 @@ class DagRun(Base, LoggingMixin):
                 if self.state is not State.RUNNING and not dag.partial:
                     ti.state = State.REMOVED
 
+
+        time_limit = configuration.getint('scheduler',
+                                          'verify_integrity_insert_time_limit')
+        start_time = datetime.now()
+
         new_tasks = []
         max_tis_per_query = configuration.getint('scheduler', 'max_tis_per_query')
 
         # check for missing tasks
         for task in six.itervalues(dag.task_dict):
+            if time_limit >= 0 and (datetime.now() - start_time).total_seconds() > \
+                    time_limit:
+                break
+
             if task.adhoc:
                 continue
 
